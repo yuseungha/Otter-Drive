@@ -1,0 +1,72 @@
+traffic_light_detector:
+  ros__parameters:
+    image_topic: /camera/front/image_raw
+    # Normalized [x, y, width, height]. Replace after recording the real track.
+    start_roi: [0.35, 0.05, 0.30, 0.30]
+    left_roi: [0.35, 0.05, 0.30, 0.30]
+    min_green_ratio: 0.02
+    min_red_ratio: 0.02
+    confirm_red_frames: 5
+    confirm_frames: 5
+    # RED and GREEN both need 5 consecutive frames. Missing signal is STOP.
+    lost_signal_frames: 1
+    min_blob_area: 50.0
+    morphology_kernel: 3
+    # Left-arrow shape: horizontal, concave, tip on the left, tail on the right.
+    left_arrow_min_aspect_ratio: 1.20
+    left_arrow_max_solidity: 0.90
+    left_arrow_min_direction_ratio: 1.20
+    # Split-line arrow support: a < arrowhead plus a separate right shaft.
+    left_arrow_line_max_head_aspect_ratio: 1.10
+    left_arrow_line_min_shaft_aspect_ratio: 1.50
+    start_requires_red: true
+    left_requires_red: false
+
+lane_preprocessor:
+  ros__parameters:
+    image_topic: /camera/front/image_raw
+    roi_top_ratio: 0.45
+    bev_width: 640
+    bev_height: 480
+    # Normalized order: bottom-left, bottom-right, top-right, top-left.
+    bev_source: [0.05, 0.98, 0.95, 0.98, 0.62, 0.05, 0.38, 0.05]
+    bev_destination: [0.20, 0.99, 0.80, 0.99, 0.80, 0.0, 0.20, 0.0]
+    white_lower_hsv: [0, 0, 175]
+    white_upper_hsv: [180, 80, 255]
+    yellow_lower_hsv: [12, 70, 70]
+    yellow_upper_hsv: [42, 255, 255]
+    morphology_kernel: 3
+    publish_individual_masks: false
+
+yolo_lane_detector:
+  ros__parameters:
+    image_topic: /camera/front/image_raw
+    roi_top_ratio: 0.45
+    bev_width: 320
+    bev_height: 240
+    bev_source: [0.05, 0.98, 0.95, 0.98, 0.62, 0.05, 0.38, 0.05]
+    bev_destination: [0.20, 0.99, 0.80, 0.99, 0.80, 0.0, 0.20, 0.0]
+    white_lower_hsv: [0, 0, 175]
+    white_upper_hsv: [180, 80, 255]
+    yellow_lower_hsv: [12, 70, 70]
+    yellow_upper_hsv: [42, 255, 255]
+    morphology_kernel: 3
+    publish_bev_debug: false
+    publish_individual_masks: false
+    confidence_threshold: 0.25
+    iou_threshold: 0.45
+    input_size: 640
+    device: auto
+    half_precision: true
+    inference_rate_hz: 15.0
+    max_detections: 2
+    warmup: true
+    left_class_name: lane1
+    right_class_name: lane2
+    lane_half_width_px: 71.0
+    use_mask_validation: true
+    minimum_mask_ratio: 0.001
+    # false: HSV가 아직 미튜닝이면 YOLO 결과를 감점해 임시 사용한다.
+    # true: minimum_mask_ratio를 넘은 검출만 사용한다.
+    strict_mask_validation: false
+    mask_fallback_confidence_scale: 0.75

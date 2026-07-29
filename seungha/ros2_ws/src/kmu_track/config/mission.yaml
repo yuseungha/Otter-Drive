@@ -1,0 +1,16 @@
+mission_manager:
+  ros__parameters:
+    target_laps: 3
+    # Official limits are 240 s total and 60 s continuously stopped.
+    # Five-second margins leave time for a controlled stop/recovery.
+    mission_timeout_sec: 235.0
+    stall_warning_sec: 3.0
+    stop_guard_sec: 55.0
+    stopped_speed_mps: 0.03
+    update_rate_hz: 20.0
+
+scenario_player:
+  ros__parameters:
+    target_laps: 3
+    step_sec: 0.45
+
