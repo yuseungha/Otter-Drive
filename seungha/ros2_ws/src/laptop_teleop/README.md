@@ -1,4 +1,7 @@
-# Laptop teleoperation
+# html 파일로 UI 만들어서 조종하면 어떨까 하는 생각에 만들어봤는데 응답속도 느려서 안 쓸 예정.
+# 다음에 왔을 때 이거 없애는 것부터 할 예정
+
+# Laptop teleoperation 
 
 노트북 브라우저의 키보드 입력을 Jetson ROS 2 토픽으로 보내고, 기존
 `rc_car_teleop/serial_bridge`가 Arduino로 전달합니다.
