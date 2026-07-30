@@ -28,4 +28,4 @@
 6. 리뷰와 검증을 통과한 작업만 `main`에 병합합니다.
 7. 데이터셋, rosbag, 모델 파일은 지정된 저장 위치를 사용합니다.
 
-자세한 GitHub 사용법과 제출 과정은 추후 추가될 `CONTRIBUTING.md`에서 안내합니다.
+자세한 사용법은 [협업 및 Pull Request 가이드](CONTRIBUTING.md)를 확인하세요.
