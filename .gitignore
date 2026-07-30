@@ -1,0 +1,39 @@
+# ROS build
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# YOLO training output
+runs/
+datasets/
+
+# Models and inference engines
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# ROS bags and recorded data
+*.bag
+*.db3
+*.mcap
+
+# Secrets
+.env
+*.key
+*.pem
+
+# Operating system
+.DS_Store
+Thumbs.db
