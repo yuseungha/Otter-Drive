@@ -1,5 +1,9 @@
 # 협업 및 Pull Request 가이드
 
+> **2026 운영 원칙:** 상위 통합 Issue 하나를 한 사람이 모두 맡지 않습니다. 같은 Issue에 여러 담당자가 OpenCV·YOLO·LiDAR·학습·퓨전 같은 구체적인 슬롯으로 들어가 각자 브랜치와 PR을 제출합니다. 개인 PR에는 `Refs #이슈번호`를 사용하고, 필요한 여러 PR이 합쳐져 통합 완료 조건을 충족했을 때만 Issue를 닫습니다. 최신 역할과 현황은 [메인 README](./README.md)를 우선합니다.
+>
+> 
+
 이 문서는 KHU Dolsoe Autonomous 팀의 GitHub 작업 규칙입니다.
 ## 0. Git과 GitHub가 처음인 팀원 안내
 
