@@ -1,0 +1,128 @@
+name: 작업 요청
+description: 개발, 데이터, 학습, 장비 시험 작업을 등록합니다.
+title: "[TASK] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        작업을 시작하기 전에 목표, 입력, 출력, 완료 조건을 작성해주세요.
+        Issue 하나에는 주 책임자 한 명을 지정합니다.
+
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: 담당 분야
+      options:
+        - SYS - 개발환경 및 공통 인터페이스
+        - TRAFFIC - 신호등 인식
+        - LANE - 차선 검출 및 마스킹
+        - OBSTACLE - 장애물 인식
+        - LIDAR - LiDAR 및 라바콘
+        - FUSION - 경로 퓨전
+        - VEHICLE - 차량 제어
+        - CAD - 3D 모델링 및 프린팅
+        - DATA - 데이터 수집 및 관리
+    validations:
+      required: true
+
+  - type: textarea
+    id: objective
+    attributes:
+      label: 목표
+      description: 이 작업으로 무엇을 가능하게 만들 것인지 작성합니다.
+      placeholder: 예) 녹화 영상에서 신호등 상태를 인식하고 ROS topic으로 출력한다.
+    validations:
+      required: true
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 배경
+      description: 왜 필요한 작업인지, 현재 어떤 문제가 있는지 작성합니다.
+    validations:
+      required: true
+
+  - type: textarea
+    id: input
+    attributes:
+      label: 입력
+      description: 영상, 데이터셋, rosbag, ROS topic, 센서 등을 작성합니다.
+      placeholder: |
+        - 입력 영상:
+        - 데이터셋 버전:
+        - ROS topic:
+        - Message type:
+        - frame_id:
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: 출력
+      description: 생성해야 하는 topic, 파일, 경로 또는 제어 명령을 작성합니다.
+      placeholder: |
+        - 출력 topic:
+        - Message type:
+        - 결과 파일:
+        - 출력 주기:
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: 완료 조건
+      description: 무엇을 확인하면 이 Issue를 완료할 수 있는지 작성합니다.
+      placeholder: |
+        - [ ] 실행 명령이 문서화됨
+        - [ ] 고정 입력 데이터에서 실행 성공
+        - [ ] 결과 영상 또는 로그 첨부
+        - [ ] 목표 FPS 또는 정확도 달성
+    validations:
+      required: true
+
+  - type: dropdown
+    id: resource
+    attributes:
+      label: 필요한 최종 장비
+      options:
+        - Laptop
+        - LiDAR
+        - Jetson
+        - Vehicle
+        - PrintShop
+        - KHU-Test
+        - Kookmin-Track
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependency
+    attributes:
+      label: 의존성과 병목
+      description: 다른 Issue, 장비, 데이터, 담당자 의존성을 작성합니다.
+      placeholder: 없음
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 제출할 증거
+      placeholder: |
+        - Pull Request:
+        - 실행 명령:
+        - 결과 영상:
+        - 측정 수치:
+        - 로그:
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: agreement
+    attributes:
+      label: 확인
+      options:
+        - label: main에 직접 push하지 않고 작업 브랜치와 PR을 사용하겠습니다.
+          required: true
+        - label: 대용량 데이터, rosbag, 모델 파일을 일반 Git에 직접 올리지 않겠습니다.
+          required: true
