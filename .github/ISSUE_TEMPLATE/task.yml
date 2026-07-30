@@ -1,11 +1,11 @@
 name: 작업 요청
-description: 담당 작업, 제출물, 막힌 문제를 간단히 등록합니다.
+description: 맡을 조각, 제출물, 필요한 자원을 간단히 등록합니다.
 title: "[TASK] "
 body:
   - type: markdown
     attributes:
       value: |
-        아래 항목만 작성하면 됩니다. 작업을 시작하면 Project 상태를 **In Progress**로 바꾸고, 결과는 개인 브랜치와 Pull Request로 제출하세요.
+        상위 Issue 하나를 한 명이 전부 맡지 않습니다. 같은 분야에서도 OpenCV, YOLO, LiDAR, 학습, 퓨전처럼 본인이 만들 조각을 골라주세요. 작업 시작 시 Project 상태를 **In Progress**로 바꾸고 개인 브랜치와 Pull Request로 결과를 제출합니다.
 
   - type: dropdown
     id: work_area
@@ -16,6 +16,16 @@ body:
         - 장애물·신호등·LiDAR
         - Jetson·차량
         - CAD·프린팅
+        - YOLO 학습·PT 검증
+    validations:
+      required: true
+
+  - type: textarea
+    id: work_slot
+    attributes:
+      label: 내가 맡을 조각·접근 방식
+      description: 분야 전체가 아니라 본인이 직접 만들 결과 한 가지를 적습니다.
+      placeholder: 예) 공개 라바콘 데이터셋으로 YOLO 후보 PT를 학습하고 기존 YOLO 노드에서 교체 실행한다.
     validations:
       required: true
 
@@ -23,8 +33,8 @@ body:
     id: goal
     attributes:
       label: 이번 작업 목표
-      description: 이번에 실제로 가능하게 만들 한 가지 결과를 적습니다.
-      placeholder: 예) 녹화 영상 입력부터 차선 중심 경로 출력까지 한 번에 실행되게 한다.
+      description: 이번 PR에서 실제로 가능하게 만들 결과를 적습니다.
+      placeholder: 예) model_path 설정만 바꿔 후보 PT를 실행하고 주행 영상 결과를 비교한다.
     validations:
       required: true
 
@@ -32,12 +42,12 @@ body:
     id: deliverables
     attributes:
       label: 제출할 결과
-      description: 코드, README, 실행 결과, 데이터 링크 중 무엇을 올릴지 적습니다.
+      description: 코드, 노드, 학습 설정, README, 실행 결과 중 무엇을 올릴지 적습니다.
       placeholder: |
-        - 코드/폴더:
-        - 실행 명령:
-        - 결과 영상 또는 로그:
-        - 데이터·모델·rosbag 링크:
+        - 코드·폴더 또는 학습 스크립트:
+        - 실행·학습 명령:
+        - 결과 영상·로그·지표:
+        - 데이터·PT·rosbag·CAD 링크:
     validations:
       required: true
 
@@ -58,6 +68,7 @@ body:
       label: 지금 필요한 자원
       options:
         - 개인 노트북만 사용
+        - GPU·Colab 등 학습 환경
         - LiDAR
         - Jetson
         - 차량
@@ -71,7 +82,7 @@ body:
     id: blocker
     attributes:
       label: 막힌 문제 또는 필요한 도움
-      description: 없으면 "없음"이라고 적습니다. 장비가 없어도 가능한 Mock·녹화 입력 작업을 먼저 적어주세요.
+      description: 없으면 "없음"이라고 적습니다. 장비가 없어도 가능한 녹화·rosbag·Mock 작업을 먼저 적어주세요.
       placeholder: 없음
     validations:
       required: true
@@ -81,7 +92,9 @@ body:
     attributes:
       label: 제출 확인
       options:
+        - label: 분야 전체가 아니라 내가 맡을 조각과 결과를 명확히 적었습니다.
+          required: true
         - label: main에 직접 push하지 않고 개인 브랜치와 Pull Request를 사용합니다.
           required: true
-        - label: 데이터셋, rosbag, .pt 같은 큰 파일은 Drive 링크만 남깁니다.
+        - label: 데이터셋, rosbag, PT, CAD 대용량 파일은 Drive 링크만 남깁니다.
           required: true
