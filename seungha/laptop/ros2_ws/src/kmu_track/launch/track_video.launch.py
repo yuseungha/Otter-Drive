@@ -9,13 +9,6 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
-DEFAULT_VIDEO = (
-    '/mnt/c/Users/small/OneDrive/문서/00_경희대학교/01_대회/'
-    '국민대 자율주행 경진대회/00_AI_Develope/Prompt/Track_drive_mp4.mp4'
-)
-DEFAULT_MODEL = DEFAULT_VIDEO.rsplit('/Prompt/', 1)[0] + '/ros2_ws/models/road_best.pt'
-
-
 def generate_launch_description() -> LaunchDescription:
     mission_config = PathJoinSubstitution(
         [FindPackageShare('kmu_track'), 'config', 'mission.yaml'])
@@ -34,8 +27,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument(
             'video_path',
-            default_value=DEFAULT_VIDEO,
-            description='Absolute WSL path to the MP4 input.'),
+            description='Required absolute path to the MP4 input.'),
         DeclareLaunchArgument(
             'loop', default_value='true',
             description='Restart from frame zero at end of video.'),
@@ -43,8 +35,8 @@ def generate_launch_description() -> LaunchDescription:
             'playback_rate', default_value='1.0',
             description='Video playback speed multiplier.'),
         DeclareLaunchArgument(
-            'model_path', default_value=DEFAULT_MODEL,
-            description='Absolute WSL path to road_best.pt.'),
+            'model_path',
+            description='Required absolute path to road_best.pt.'),
         DeclareLaunchArgument(
             'display', default_value='true',
             description='Open the pipeline and HSV control windows.'),

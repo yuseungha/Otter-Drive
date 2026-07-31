@@ -6,7 +6,7 @@ Windows PowerShell에서 WSL에 진입한 다음 실행한다.
 
 ```bash
 wsl -d Ubuntu-22.04
-cd "/mnt/c/Users/small/OneDrive/문서/00_경희대학교/01_대회/국민대 자율주행 경진대회/00_AI_Develope/ros2_ws"
+cd "$(git rev-parse --show-toplevel)/seungha/laptop/ros2_ws"
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
@@ -48,10 +48,13 @@ ros2 launch kmu_track track_bringup.launch.py demo:=false display:=true
 
 ## MP4 영상으로 창에서 확인
 
-제공된 `Prompt/Track_drive_mp4.mp4`를 카메라 대신 재생하고 전체 처리 단계와 YOLO 결과를 별도 창에 표시한다. 기본 모델은 `models/road_best.pt`다.
+Git에 포함하지 않은 시험 영상과 모델의 절대 경로를 실행 인자로 전달해 카메라 대신
+재생하고 전체 처리 단계와 YOLO 결과를 별도 창에 표시한다.
 
 ```bash
-ros2 launch kmu_track track_video.launch.py
+ros2 launch kmu_track track_video.launch.py \
+  video_path:=/absolute/path/to/Track_drive_mp4.mp4 \
+  model_path:=/absolute/path/to/road_best.pt
 ```
 
 창 조작키:

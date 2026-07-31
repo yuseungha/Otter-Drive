@@ -7,7 +7,7 @@
 
 ```bash
 source /opt/ros/humble/setup.bash
-cd ros2_ws
+cd laptop/ros2_ws
 export PYTHONNOUSERSITE=1
 colcon build --symlink-install \
   --packages-select kmu_track rc_car_teleop laptop_teleop
