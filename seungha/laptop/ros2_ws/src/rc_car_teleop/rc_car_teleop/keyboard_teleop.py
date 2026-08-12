@@ -13,8 +13,8 @@ from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Int32MultiArray, String
 
-STEERING_STEP = 150
-THROTTLE_STEP = 150
+STEERING_STEP = 100
+THROTTLE_STEP = 30
 THROTTLE_MIN = -1000
 THROTTLE_MAX = 1050
 STEERING_MIN = -1000

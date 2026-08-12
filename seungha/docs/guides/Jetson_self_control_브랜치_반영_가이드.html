@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jetson self-control 브랜치 반영 가이드</title>
+  <style>
+    :root { --bg:#0b1220; --panel:#121d30; --line:#2a3d57; --text:#edf4ff; --muted:#a8b8cb; --accent:#64d9c4; --blue:#9ac5ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:linear-gradient(145deg,#09111d,#122039); color:var(--text); font-family:Pretendard,"Noto Sans KR",system-ui,sans-serif; line-height:1.62; }
+    main { width:min(920px,calc(100% - 28px)); margin:30px auto 64px; }
+    h1 { margin:0; font-size:clamp(27px,5vw,42px); letter-spacing:-.05em; }
+    h2 { margin:0 0 12px; font-size:20px; }
+    p { margin:7px 0; }
+    .lead { color:var(--muted); margin:8px 0 24px; }
+    .card { background:rgba(18,29,48,.95); border:1px solid var(--line); border-radius:16px; padding:19px; margin:14px 0; }
+    .accent { border-left:5px solid var(--accent); }
+    .tag { display:inline-block; margin-bottom:12px; padding:3px 9px; border-radius:999px; background:var(--accent); color:#071510; font-size:12px; font-weight:800; }
+    code { padding:2px 6px; border:1px solid #304762; border-radius:6px; background:#091321; color:#dcecff; }
+    pre { overflow:auto; margin:10px 0 0; padding:14px; border:1px solid #304762; border-radius:10px; background:#08111e; color:#d9e8fa; }
+    .cmd { color:var(--blue); }
+    .muted { color:var(--muted); }
+    .ok { color:var(--accent); font-weight:700; }
+    ol { padding-left:22px; }
+    li { margin:8px 0; }
+    table { width:100%; border-collapse:collapse; margin-top:8px; }
+    th,td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--accent); }
+    a { color:#9ac5ff; }
+  </style>
+</head>
+<body>
+<main>
+  <span class="tag">GitHub branch: self-control</span>
+  <h1>Jetson 코드 반영 및 수동주행 실행</h1>
+  <p class="lead">모니터를 Jetson에 연결한 뒤 GitHub에서 브랜치를 확인하고, Jetson 터미널에서 pull·빌드·실행하는 절차입니다.</p>
+
+  <section class="card accent">
+    <h2>이번 반영 내용</h2>
+    <table>
+      <thead><tr><th>항목</th><th>반영값</th></tr></thead>
+      <tbody>
+        <tr><td>W/S 속도 증감</td><td><code>THROTTLE_STEP = 30</code></td></tr>
+        <tr><td>A/D 조향 증감</td><td><code>STEERING_STEP = 100</code></td></tr>
+        <tr><td>GitHub 저장소</td><td><a href="https://github.com/yuseungha/KMU_AutoDrive/tree/self-control">yuseungha/KMU_AutoDrive · self-control</a></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>1. Jetson에서 GitHub 브랜치 확인</h2>
+    <ol>
+      <li>Jetson에 모니터와 키보드를 연결하고 Ubuntu에 로그인합니다.</li>
+      <li>브라우저에서 <a href="https://github.com/yuseungha/KMU_AutoDrive/tree/self-control">self-control 브랜치</a>를 엽니다.</li>
+      <li><code>rc_car_teleop/keyboard_teleop.py</code>의 <code>THROTTLE_STEP = 30</code>을 확인합니다.</li>
+      <li>GitHub 웹 화면의 확인이 끝나면 Jetson의 Terminal에서 pull을 실행합니다.</li>
+    </ol>
+    <p class="muted">GitHub 웹 페이지는 브랜치 확인용이며, 실제 pull은 Terminal에서 수행합니다.</p>
+  </section>
+
+  <section class="card">
+    <h2>2. Jetson Terminal에서 저장소와 브랜치 확인</h2>
+    <p>현재 수동주행 실행 워크스페이스가 GitHub 저장소의 체크아웃인지 먼저 확인합니다.</p>
+    <pre class="cmd">cd /home/sandi/ros2_ws
+git rev-parse --show-toplevel
+git remote -v
+git status -sb</pre>
+    <p>remote가 <code>https://github.com/yuseungha/KMU_AutoDrive.git</code>이고, 작업 루트가 확인되면 다음 단계로 진행합니다.</p>
+  </section>
+
+  <section class="card">
+    <h2>3. self-control 브랜치 pull</h2>
+    <pre class="cmd">cd /home/sandi/ros2_ws
+git fetch origin --prune
+git switch self-control
+git pull --ff-only origin self-control</pre>
+    <p class="muted">로컬에 브랜치가 없으면 다음을 한 번 실행한 뒤 다시 pull합니다.</p>
+    <pre class="cmd">git switch --track -c self-control origin/self-control</pre>
+  </section>
+
+  <section class="card">
+    <h2>4. 코드 반영값 확인</h2>
+    <pre class="cmd">grep -n "THROTTLE_STEP\|STEERING_STEP" \
+  /home/sandi/ros2_ws/src/rc_car_teleop/rc_car_teleop/keyboard_teleop.py</pre>
+    <p class="ok">정상 결과: THROTTLE_STEP = 30, STEERING_STEP = 100</p>
+  </section>
+
+  <section class="card">
+    <h2>5. Jetson ROS 2 재빌드</h2>
+    <pre class="cmd">cd /home/sandi/ros2_ws
+source /opt/ros/humble/setup.bash
+PYTHONNOUSERSITE=1 colcon build --symlink-install \
+  --packages-select kmu_track rc_car_teleop laptop_teleop
+source install/setup.bash</pre>
+  </section>
+
+  <section class="card">
+    <h2>6. 수동주행 실행</h2>
+    <pre class="cmd">docker exec -it sanditest bash \
+  /root/ros2_ws/src/laptop_teleop/scripts/container_existing_manual.sh</pre>
+    <table>
+      <thead><tr><th>키</th><th>동작</th></tr></thead>
+      <tbody>
+        <tr><td><code>W</code> / <code>S</code></td><td>속도값을 30씩 증가 / 감소</td></tr>
+        <tr><td><code>A</code> / <code>D</code></td><td>조향값을 100씩 좌 / 우 변경</td></tr>
+        <tr><td><code>Space</code></td><td>속도 정지</td></tr>
+        <tr><td><code>C</code></td><td>조향 중앙</td></tr>
+        <tr><td><code>X</code></td><td>속도 정지 및 조향 중앙</td></tr>
+        <tr><td><code>Q</code> 또는 <code>Ctrl+C</code></td><td>수동주행 종료</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>7. pull이 불가능할 때</h2>
+    <p><code>not a git repository</code>가 나오거나 remote가 다르면 해당 경로에서 임의로 <code>git init</code>하지 않습니다. 실제 Git checkout 경로를 확인한 뒤, 그 저장소 루트에서 2~5단계를 실행합니다.</p>
+    <pre class="cmd">find /home/sandi -path '*/.git' -type d 2&gt;/dev/null
+git -C /실제/저장소/경로 remote -v</pre>
+  </section>
+</main>
+</body>
+</html>
