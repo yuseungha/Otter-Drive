@@ -53,7 +53,7 @@ models:
       - {path: "/home/sandi/ros2_ws/best.pt", sha256: "104e7730...21d7", size: 23848500}
       - {path: "/home/sandi/test_ws/models/best_from_zip.pt", sha256: "104e7730...21d7", size: 23848500}
       - {path: "/home/sandi/test_ws/models/best.pt", sha256: "b10ead8f...eb8b", size: 6779188}
-      - {path: "/home/sandi/Downloads/best.pt", sha256: "b10ead8f...eb8b", size: 6779188}
+      - {path: "/home/sandi/Downloads/best.pt", sha256: "89427ee9...1996", size: 54825756}
       - {path: "/home/sandi/Downloads/roadfinal_best.pt", sha256: "20b1a9d1...4187f", size: 6547946}
       - {path: "/home/sandi/Downloads/obstacle_best.pt", sha256: "37cdddf8...de83", size: 6252266}
 
@@ -69,6 +69,48 @@ models:
       confidence_range: [0.713, 0.967]
       inference_ms_mean: 19.3
       verdict: "loads, task=detect, classes match, detects lane1+lane2"
+
+  - name: segmentation_lane_planner
+    filename: center_lane_best.pt
+    sha256: 89427ee98034e0fdcee772b194923d33f532f07aa825905ec10a205687d71996
+    size_bytes: 54825756
+    modified: "2026-08-20T02:18:32+09:00"
+
+    task: segment
+    classes:
+      0: center
+      1: lane
+    input_size: 640
+
+    provenance:
+      source_path: "/home/sandi/Downloads/best.pt"
+      base_model: "yolov8m-seg.pt"
+      dataset_config: "/content/realmerge-4/data.yaml"
+      training_run: "kookmin_center_lane_x2_yolov8m_seg"
+      notes: >
+        Static pickle inspection found standard torch and ultralytics
+        SegmentationModel classes. The model was then loaded locally and its
+        task, names, stride, and training arguments were verified.
+
+    target_path_repo: "KMU_AutoDriving/models/center_lane_best.pt"
+    target_path_jetson: "/home/sandi/KMU_AutoDriving/models/center_lane_best.pt"
+
+    local_validation:
+      date: "2026-08-20"
+      torch: "2.13.0+cu130"
+      ultralytics: "8.4.98"
+      device: "CPU (host CUDA package is newer than the Jetson driver)"
+      sample: "Track_drive_mp4.mp4 at 20 s, 640x480"
+      detections:
+        lane: [0.9282, 0.9449]
+        center: [0.3149, 0.6915]
+      planner_result:
+        valid: true
+        target_source: BOTH_LANES
+        center_error: 0.0615
+        confidence: 0.7863
+      fail_safe_sample: >
+        A cone-course frame with only one lane mask produced valid=false.
 
   # Rejected candidate, recorded so it is not picked up by mistake.
   - name: unknown_classifier

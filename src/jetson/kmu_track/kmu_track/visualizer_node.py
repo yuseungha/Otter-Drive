@@ -38,6 +38,8 @@ class TrackVisualizerNode(Node):
         self.declare_parameter('show_mask_panel', False)
         self.declare_parameter('auto_capture', False)
         self.declare_parameter('dry_run', True)
+        self.declare_parameter('steering_max_counts', 650)
+        self.declare_parameter('steering_deadband_counts', 110)
         self.declare_parameter('capture_gate_transitions', False)
         self.declare_parameter(
             'capture_times_sec', [10.0, 60.0, 90.0, 210.0])
@@ -281,8 +283,15 @@ class TrackVisualizerNode(Node):
         self._put_text(panel, '3. STEERING', (10, 20), (0, 255, 255), 0.55)
         status = self.control_status
         steering = int(status.get('steering_counts', 0))
-        max_counts = 600
-        deadband = 70
+        max_counts = max(
+            1, int(self.get_parameter('steering_max_counts').value))
+        deadband = max(
+            0,
+            min(
+                max_counts - 1,
+                int(self.get_parameter('steering_deadband_counts').value),
+            ),
+        )
         x0, x1 = 38, width - 38
         gauge_y = 76
 
@@ -313,8 +322,12 @@ class TrackVisualizerNode(Node):
             panel,
             f'{steering:+d} counts  {direction}  deadband +/-{deadband}',
             (38, 116), color, 0.58, 1)
-        self._put_text(panel, '-600 RIGHT', (x0, 52), (180, 180, 180), 0.42)
-        self._put_text(panel, '+600 LEFT', (x1 - 78, 52), (180, 180, 180), 0.42)
+        self._put_text(
+            panel, f'-{max_counts} RIGHT', (x0, 52),
+            (180, 180, 180), 0.42)
+        self._put_text(
+            panel, f'+{max_counts} LEFT', (x1 - 82, 52),
+            (180, 180, 180), 0.42)
 
         strip_top = 142
         strip_bottom = height - 26

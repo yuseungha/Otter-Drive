@@ -22,7 +22,7 @@ class TcpSteeringSender(Node):
         self.declare_parameter('port', 9100)
         self.declare_parameter('send_rate_hz', 20.0)
         self.declare_parameter('input_timeout_sec', 0.30)
-        self.declare_parameter('max_abs_steering', 900)
+        self.declare_parameter('max_abs_steering', 650)
         self._host = str(self.get_parameter('host').value)
         self._port = int(self.get_parameter('port').value)
         rate = float(self.get_parameter('send_rate_hz').value)

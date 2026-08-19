@@ -1,7 +1,8 @@
 # KMU AutoDriving
 
 Jetson Orin에서 실행하는 대회용 ROS 2 Humble 작업공간입니다. 현재 기준선은
-Logitech BRIO 입력, YOLO `lane1`/`lane2` 차선 인식, 안전한 차선 제어 DRY-RUN입니다.
+Logitech BRIO 기반 YOLO 차선 인식과 RPLIDAR 기반 라바콘 중앙 경로 인식입니다.
+두 경로 모두 기본 실행에서는 차량 출력이 차단됩니다.
 
 ## 최초 준비
 
@@ -28,6 +29,29 @@ cp .env.example .env
 ./scripts/run_competition.sh --video /absolute/path/to/video.mp4
 ```
 
+새 `center`/`lane` 세그멘테이션 모델로 기본 차선 플래너를 검증할 때는 전용
+드라이런을 사용합니다. 두 실행 모두 Arduino bridge를 시작하지 않습니다.
+
+```bash
+./scripts/run_seg_lane.sh --check
+./scripts/run_seg_lane.sh --video /absolute/path/to/video.mp4
+./scripts/run_seg_lane.sh --camera
+```
+
+이 플래너는 양쪽 `lane` 마스크의 중점을 우선 추종하고 `center` 마스크로
+보강합니다. 한쪽 경계만 보이고 중앙선도 없으면 차선 폭을 추측하지 않고
+`/lane/valid=false`를 내보냅니다. 상세 구조와 초기 튜닝 항목은
+`docs/segmentation_lane_planner.md`에 있습니다.
+
+RPLIDAR와 라바콘 플래너만 실행하며 모터·ESC·Arduino bridge는 시작하지 않습니다.
+
+```bash
+./scripts/run_competition.sh --cone-dry-run
+```
+
+LiDAR 장착 좌표와 코스 실측값은 `configs/cone/`에 있으며, 실행 전에
+`.env`의 `KMU_LIDAR_DEVICE`를 실제 by-id 장치 경로와 대조해야 합니다.
+
 실차 출력은 `docs/competition_runbook.md`의 하드웨어 검증을 완료하고 `.env`의
 `KMU_HARDWARE_CONFIRMED=true`를 명시한 경우에만 허용됩니다.
 
@@ -44,6 +68,8 @@ cp .env.example .env
 - `src/laptop`: 영상 재생 및 노트북 운영 도구의 향후 분리 위치
 - `src/jetson/kmu_track`: 차선 인식·제어·bringup ROS 패키지
 - `src/jetson/rc_car_teleop`: Arduino 직렬 브리지
+- `src/jetson/lidar_cone_planner`: 라바콘 검출·중앙 경로·안전 제어 패키지
+- `src/jetson/rplidar_ros`: Slamtec RPLIDAR ROS 2 드라이버
 - `configs`: 장비 및 알고리즘 운영 설정
 - `models`: 로컬 모델 저장 위치. 모델 바이너리는 Git에서 제외
 

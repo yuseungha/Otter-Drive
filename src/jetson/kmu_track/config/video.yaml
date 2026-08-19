@@ -18,5 +18,7 @@ track_visualizer:
     capture_dir: runs
     show_mask_panel: false
     auto_capture: false
+    steering_max_counts: 650
+    steering_deadband_counts: 110
     capture_gate_transitions: false
     capture_times_sec: [10.0, 60.0, 90.0, 210.0, 250.0]

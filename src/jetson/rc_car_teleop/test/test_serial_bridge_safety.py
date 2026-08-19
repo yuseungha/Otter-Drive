@@ -289,6 +289,27 @@ def test_host_timeout_latches_disarm_and_emits_x_not_stale_d(monkeypatch):
     assert not bridge._operator_deadman
 
 
+def test_disarm_acknowledges_timeout_and_clears_stale_status(monkeypatch):
+    connection = ScriptedSerial()
+    bridge = ready_bridge(connection)
+    bridge._operator_armed = True
+    bridge._operator_deadman = True
+    now = [104.0]
+    monkeypatch.setattr(serial_bridge_module.time, 'monotonic', lambda: now[0])
+    bridge._drive_callback(SimpleNamespace(data=[100, 25]))
+
+    now[0] = 104.201
+    bridge._write_decision(now[0])
+    assert bridge._safety.command_stale
+    assert bridge._command_stale_pub.messages[-1]
+
+    bridge._operator_armed_callback(SimpleNamespace(data=False))
+
+    assert not bridge._host_timeout_latched
+    assert not bridge._safety.command_stale
+    assert bridge._command_stale_pub.messages[-1] is False
+
+
 def test_partial_d_blocks_recovery_and_never_appends_x(monkeypatch):
     expected = b'D 100 25\n'
     connection = ScriptedSerial(write_results=[len(expected) - 1])

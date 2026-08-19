@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 from time import perf_counter
+import threading
 
 import cv2
 import numpy as np
@@ -12,12 +13,16 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool, Float32, Int32MultiArray, String
+from std_msgs.msg import Bool, Float32, Header, Int32MultiArray, String
 import torch
 from ultralytics import YOLO
 
 from kmu_track.lane_core import bev_points_to_image, preprocess_lane_frame
 from kmu_track.lane_feature_core import LaneFeatureTracker
+from kmu_track.drive_mode_core import (
+    ConsecutiveThreshold,
+    largest_bbox_area_ratio,
+)
 
 
 def image_message_to_numpy(message: Image) -> np.ndarray:
@@ -71,6 +76,22 @@ class YoloLaneDetectorNode(Node):
             str(self.get_parameter('left_class_name').value))
         self.right_class_id = self._class_id(
             str(self.get_parameter('right_class_name').value))
+        self.cone_class_ids = self._optional_class_ids(
+            self.get_parameter('cone_class_names').value)
+        cone_source = str(
+            self.get_parameter('cone_detection_source').value
+        ).strip().lower()
+        if cone_source not in {'auto', 'yolo', 'hsv'}:
+            raise ValueError(
+                'cone_detection_source must be auto, yolo, or hsv')
+        if cone_source == 'yolo' and not self.cone_class_ids:
+            raise ValueError(
+                'cone_detection_source=yolo but no cone class exists in model')
+        self._cone_detection_source = (
+            'yolo' if cone_source == 'auto' and self.cone_class_ids
+            else 'hsv' if cone_source == 'auto'
+            else cone_source
+        )
         self.device = self._resolve_device(
             str(self.get_parameter('device').value))
         self.half_precision = bool(
@@ -86,8 +107,21 @@ class YoloLaneDetectorNode(Node):
         self.latest_input = None
         self.last_processed_stamp = None
         self.invalid_since = None
+        self._subscription_condition = threading.Condition()
+        self._image_callbacks_in_flight = 0
+        self._accept_image_work = False
+        self._image_subscription = None
+        self._managed_subscription = bool(
+            self.get_parameter('managed_subscription').value)
+        self._mission_mode = 'LANE_FOLLOW'
+        # Wait for the LiDAR planner's latched inactive state before starting.
+        self._lidar_subscription_active = self._managed_subscription
+        self._cone_detector = ConsecutiveThreshold(int(
+            self.get_parameter('cone_camera_confirm_frames').value))
+        self._cone_event_sent = False
 
-        self.error_pub = self.create_publisher(Float32, '/lane/center_error', 10)
+        self.error_pub = self.create_publisher(
+            Float32, '/lane/center_error', 10)
         self.valid_pub = self.create_publisher(Bool, '/lane/valid', 10)
         self.confidence_pub = self.create_publisher(
             Float32, '/lane/confidence', 10)
@@ -118,14 +152,30 @@ class YoloLaneDetectorNode(Node):
             Int32MultiArray, '/lane/hsv_thresholds/current', threshold_qos)
         self.ready_pub = self.create_publisher(
             Bool, '/lane/detector_ready', threshold_qos)
+        self.camera_active_pub = self.create_publisher(
+            Bool, '/perception/camera_subscription_active', threshold_qos)
+        self.camera_heartbeat_pub = self.create_publisher(
+            Header, '/perception/camera_heartbeat', 10)
+        self.cone_confirmed_pub = self.create_publisher(
+            Bool, '/perception/cone_confirmed', 10)
+        self.cone_area_ratio_pub = self.create_publisher(
+            Float32, '/perception/cone_camera_area_ratio', 10)
+        self.lane_valid_event_pub = self.create_publisher(
+            Bool, '/perception/lane_valid', 10)
+        self.lane_result_pub = self.create_publisher(
+            String, '/perception/lane_result', 10)
         self.create_subscription(
-            Image,
-            str(self.get_parameter('image_topic').value),
-            self._on_image,
-            qos_profile_sensor_data,
-        )
+            Int32MultiArray, '/lane/hsv_thresholds/set',
+            self._on_thresholds, 10)
         self.create_subscription(
-            Int32MultiArray, '/lane/hsv_thresholds/set', self._on_thresholds, 10)
+            String, '/mission/state', self._on_mission_state, threshold_qos)
+        self.create_subscription(
+            Bool, '/perception/lidar_subscription_active',
+            self._on_lidar_activity, threshold_qos)
+        if self._managed_subscription:
+            self.camera_active_pub.publish(Bool(data=False))
+        else:
+            self._activate_image_subscription()
         rate = max(0.2, float(self.get_parameter('inference_rate_hz').value))
         self.timer = self.create_timer(1.0 / rate, self._run_inference)
         self._publish_thresholds()
@@ -139,6 +189,15 @@ class YoloLaneDetectorNode(Node):
     def _declare_parameters(self) -> None:
         self.declare_parameter('model_path', '')
         self.declare_parameter('image_topic', '/camera/front/image_raw')
+        self.declare_parameter('managed_subscription', False)
+        self.declare_parameter('cone_camera_min_area_ratio', 0.015)
+        self.declare_parameter('cone_camera_confirm_frames', 3)
+        self.declare_parameter(
+            'cone_class_names', ['cone', 'traffic_cone', 'lava_cone'])
+        self.declare_parameter('cone_detection_source', 'auto')
+        self.declare_parameter('cone_orange_lower_hsv', [3, 100, 90])
+        self.declare_parameter('cone_orange_upper_hsv', [25, 255, 255])
+        self.declare_parameter('cone_morphology_kernel', 5)
         self.declare_parameter('roi_top_ratio', 0.45)
         self.declare_parameter('bev_width', 320)
         self.declare_parameter('bev_height', 240)
@@ -239,7 +298,11 @@ class YoloLaneDetectorNode(Node):
             'iou': float(self.get_parameter('iou_threshold').value),
             'device': self.device,
             'max_det': int(self.get_parameter('max_detections').value),
-            'classes': [self.left_class_id, self.right_class_id],
+            'classes': list(dict.fromkeys([
+                self.left_class_id,
+                self.right_class_id,
+                *self.cone_class_ids,
+            ])),
             'verbose': False,
         }
         if self.half_precision:
@@ -261,7 +324,17 @@ class YoloLaneDetectorNode(Node):
         for class_id, name in items:
             if str(name) == class_name:
                 return int(class_id)
-        raise ValueError(f'class {class_name!r} not found in model names={names}')
+        raise ValueError(
+            f'class {class_name!r} not found in model names={names}')
+
+    def _optional_class_ids(self, class_names) -> list[int]:
+        requested = {str(name).strip().lower() for name in class_names}
+        names = self.model.names
+        items = names.items() if isinstance(names, dict) else enumerate(names)
+        return [
+            int(class_id) for class_id, name in items
+            if str(name).strip().lower() in requested
+        ]
 
     @staticmethod
     def _stamp_key(message: Image) -> tuple:
@@ -295,8 +368,100 @@ class YoloLaneDetectorNode(Node):
         self.thresholds = values
         self._publish_thresholds()
 
+    def _on_mission_state(self, message: String) -> None:
+        mode = str(message.data).strip().upper()
+        if mode not in {
+            'LANE_FOLLOW', 'CONE_INIT', 'CONE_SLALOM',
+            'LANE_REACQUIRE', 'SAFE_STOP',
+        }:
+            mode = 'SAFE_STOP'
+        previous = self._mission_mode
+        self._mission_mode = mode
+        if mode != previous:
+            self._cone_detector.reset()
+            self._cone_event_sent = False
+        if not self._managed_subscription:
+            return
+        if mode not in {'LANE_FOLLOW', 'LANE_REACQUIRE'}:
+            self._deactivate_image_subscription()
+        else:
+            self._reconcile_image_subscription()
+
+    def _on_lidar_activity(self, message: Bool) -> None:
+        self._lidar_subscription_active = bool(message.data)
+        if self._managed_subscription:
+            self._reconcile_image_subscription()
+
+    def _reconcile_image_subscription(self) -> None:
+        allowed = (
+            self._mission_mode in {'LANE_FOLLOW', 'LANE_REACQUIRE'}
+            and not self._lidar_subscription_active
+        )
+        if allowed:
+            self._activate_image_subscription()
+        else:
+            self._deactivate_image_subscription()
+
+    def _activate_image_subscription(self) -> None:
+        with self._subscription_condition:
+            if self._image_subscription is not None:
+                return
+            self._accept_image_work = True
+            self.latest_input = None
+            self.last_processed_stamp = None
+            self._image_subscription = self.create_subscription(
+                Image,
+                str(self.get_parameter('image_topic').value),
+                self._on_image,
+                qos_profile_sensor_data,
+            )
+        self.camera_active_pub.publish(Bool(data=True))
+        self.get_logger().info('Camera perception subscription activated')
+
+    def _deactivate_image_subscription(self) -> None:
+        with self._subscription_condition:
+            subscription = self._image_subscription
+            if subscription is None:
+                return
+            self._accept_image_work = False
+            self._image_subscription = None
+            self.latest_input = None
+        self.destroy_subscription(subscription)
+        with self._subscription_condition:
+            while self._image_callbacks_in_flight:
+                self._subscription_condition.wait(timeout=0.10)
+        self.latest_input = None
+        self.last_processed_stamp = None
+        self.feature_tracker = self._make_feature_tracker()
+        self.valid_pub.publish(Bool(data=False))
+        self.lane_valid_event_pub.publish(Bool(data=False))
+        self.camera_active_pub.publish(Bool(data=False))
+        self.get_logger().info(
+            'Camera perception subscription destroyed; callbacks drained')
+
+    def _begin_camera_work(self) -> bool:
+        with self._subscription_condition:
+            if not self._accept_image_work:
+                return False
+            self._image_callbacks_in_flight += 1
+            return True
+
+    def _finish_camera_work(self) -> None:
+        with self._subscription_condition:
+            self._image_callbacks_in_flight -= 1
+            self._subscription_condition.notify_all()
+
     def _on_image(self, message: Image) -> None:
+        if not self._begin_camera_work():
+            return
         try:
+            self._on_image_guarded(message)
+        finally:
+            self._finish_camera_work()
+
+    def _on_image_guarded(self, message: Image) -> None:
+        try:
+            self.camera_heartbeat_pub.publish(message.header)
             bgr = image_message_to_numpy(message)
             processed = preprocess_lane_frame(
                 bgr,
@@ -321,16 +486,60 @@ class YoloLaneDetectorNode(Node):
             if bool(self.get_parameter('use_yellow_mask').value)
             else processed.white_mask
         )
-        self.latest_input = (
-            self._stamp_key(message), bgr, processed, binary, message)
+        with self._subscription_condition:
+            if not self._accept_image_work:
+                return
+            self.latest_input = (
+                self._stamp_key(message), bgr, processed, binary, message)
         self.binary_pub.publish(numpy_to_image_message(binary, message))
         if bool(self.get_parameter('publish_bev_debug').value):
-            self.bev_pub.publish(numpy_to_image_message(processed.bev, message))
+            self.bev_pub.publish(numpy_to_image_message(
+                processed.bev, message))
         if bool(self.get_parameter('publish_individual_masks').value):
             self.white_pub.publish(numpy_to_image_message(
                 processed.white_mask, message))
             self.yellow_pub.publish(numpy_to_image_message(
                 processed.yellow_mask, message))
+
+    def _cone_bounding_box_area_ratio(self, bgr: np.ndarray) -> float:
+        """Return the largest orange connected-component bounding-box ratio."""
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(
+            hsv,
+            np.asarray(self.get_parameter('cone_orange_lower_hsv').value,
+                       dtype=np.uint8),
+            np.asarray(self.get_parameter('cone_orange_upper_hsv').value,
+                       dtype=np.uint8),
+        )
+        kernel_size = max(
+            1, int(self.get_parameter('cone_morphology_kernel').value))
+        kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        boxes = []
+        for contour in contours:
+            boxes.append(cv2.boundingRect(contour))
+        return largest_bbox_area_ratio(boxes, bgr.shape[1], bgr.shape[0])
+
+    def _yolo_cone_bounding_box_area_ratio(
+        self, result, image: np.ndarray
+    ) -> float:
+        if result.boxes is None or not self.cone_class_ids:
+            return 0.0
+        coordinates = result.boxes.xyxy.cpu().numpy()
+        classes = result.boxes.cls.int().cpu().numpy()
+        boxes = []
+        for box, class_id in zip(coordinates, classes):
+            if int(class_id) not in self.cone_class_ids:
+                continue
+            x1, y1, x2, y2 = (float(value) for value in box)
+            boxes.append((
+                int(round(x1)), int(round(y1)),
+                int(round(x2 - x1)), int(round(y2 - y1)),
+            ))
+        return largest_bbox_area_ratio(
+            boxes, image.shape[1], image.shape[0])
 
     def _raw_mask(self, bgr: np.ndarray) -> np.ndarray:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
@@ -393,11 +602,17 @@ class YoloLaneDetectorNode(Node):
                 'mask_fallback': not accepted,
             }
             previous = unvalidated.get(class_id)
-            if previous is None or candidate['confidence'] > previous['confidence']:
+            if (
+                previous is None
+                or candidate['confidence'] > previous['confidence']
+            ):
                 unvalidated[class_id] = candidate
             if accepted:
                 previous = selected.get(class_id)
-                if previous is None or candidate['confidence'] > previous['confidence']:
+                if (
+                    previous is None
+                    or candidate['confidence'] > previous['confidence']
+                ):
                     selected[class_id] = candidate
         if use_mask and not bool(
             self.get_parameter('strict_mask_validation').value
@@ -430,7 +645,9 @@ class YoloLaneDetectorNode(Node):
             image, text, origin, cv2.FONT_HERSHEY_SIMPLEX,
             0.48, color, 1, cv2.LINE_AA)
 
-    def _draw_overlay(self, bgr: np.ndarray, geometry: dict, valid: bool) -> np.ndarray:
+    def _draw_overlay(
+        self, bgr: np.ndarray, geometry: dict, valid: bool
+    ) -> np.ndarray:
         overlay = bgr.copy()
         height, width = overlay.shape[:2]
         for key, color, label in (
@@ -442,10 +659,14 @@ class YoloLaneDetectorNode(Node):
                 continue
             x1, y1, x2, y2 = (int(round(value)) for value in box)
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 1)
-            self._put_text(overlay, label, (max(0, x1 + 3), max(15, y1 + 15)), color)
+            self._put_text(
+                overlay, label,
+                (max(0, x1 + 3), max(15, y1 + 15)), color)
 
         center_x = int(round(geometry['image_center_x']))
-        cv2.line(overlay, (center_x, 0), (center_x, height - 1), (0, 140, 255), 2)
+        cv2.line(
+            overlay, (center_x, 0), (center_x, height - 1),
+            (0, 140, 255), 2)
         target_points = []
         virtual_points = []
         for row in geometry.get('scan_rows', []):
@@ -466,21 +687,28 @@ class YoloLaneDetectorNode(Node):
                     cv2.circle(overlay, (x, y), 4, (40, 240, 40), -1)
                 else:
                     cv2.circle(overlay, (x, y), 5, (0, 220, 255), 2)
-                    self._put_text(overlay, 'P', (x + 5, y - 4), (0, 220, 255))
+                    self._put_text(
+                        overlay, 'P', (x + 5, y - 4), (0, 220, 255))
             if row.get('target_x') is not None:
                 x = int(round(np.clip(row['target_x'], 0, width - 1)))
                 target_points.append((x, y))
                 if row.get('source') == 'box_fallback':
-                    cv2.line(overlay, (x - 5, y - 5), (x + 5, y + 5), (170, 170, 170), 2)
-                    cv2.line(overlay, (x - 5, y + 5), (x + 5, y - 5), (170, 170, 170), 2)
+                    cv2.line(
+                        overlay, (x - 5, y - 5), (x + 5, y + 5),
+                        (170, 170, 170), 2)
+                    cv2.line(
+                        overlay, (x - 5, y + 5), (x + 5, y - 5),
+                        (170, 170, 170), 2)
             if row.get('target_source') == 'ONE_EDGE':
                 points = row.get('points', {})
                 assumed = geometry.get('single_side_assumed_px', 0.0)
                 assumed *= width / 640.0
                 if points.get('left') is not None:
-                    virtual_points.append((int(points['left']['x'] + assumed), y))
+                    virtual_points.append(
+                        (int(points['left']['x'] + assumed), y))
                 elif points.get('right') is not None:
-                    virtual_points.append((int(points['right']['x'] - assumed), y))
+                    virtual_points.append(
+                        (int(points['right']['x'] - assumed), y))
         if len(target_points) >= 2:
             cv2.polylines(
                 overlay, [np.asarray(target_points, dtype=np.int32)],
@@ -490,7 +718,10 @@ class YoloLaneDetectorNode(Node):
                 cv2.line(
                     overlay, virtual_points[index - 1], virtual_points[index],
                     (150, 150, 150), 2, cv2.LINE_AA)
-        look_rows = [row for row in geometry.get('scan_rows', []) if row.get('look_ahead')]
+        look_rows = [
+            row for row in geometry.get('scan_rows', [])
+            if row.get('look_ahead')
+        ]
         if look_rows and look_rows[0].get('target_x') is not None:
             row = look_rows[0]
             target_x = int(round(row['target_x']))
@@ -504,12 +735,21 @@ class YoloLaneDetectorNode(Node):
             )
             overlay = cv2.addWeighted(band, 0.30, overlay, 0.70, 0.0)
         if geometry.get('consistency_warning'):
-            cv2.rectangle(overlay, (0, 0), (width, 25), (20, 20, 180), -1)
-            self._put_text(overlay, 'CENTER CONSISTENCY WARNING', (8, 18), (255, 255, 255))
+            cv2.rectangle(
+                overlay, (0, 0), (width, 25), (20, 20, 180), -1)
+            self._put_text(
+                overlay, 'CENTER CONSISTENCY WARNING', (8, 18),
+                (255, 255, 255))
         if not valid:
-            cv2.rectangle(overlay, (1, 1), (width - 2, height - 2), (0, 0, 255), 5)
-            lost = 0.0 if self.invalid_since is None else perf_counter() - self.invalid_since
-            self._put_text(overlay, f'LOST {lost:.2f}s', (8, height - 12), (0, 0, 255))
+            cv2.rectangle(
+                overlay, (1, 1), (width - 2, height - 2),
+                (0, 0, 255), 5)
+            lost = (
+                0.0 if self.invalid_since is None
+                else perf_counter() - self.invalid_since)
+            self._put_text(
+                overlay, f'LOST {lost:.2f}s', (8, height - 12),
+                (0, 0, 255))
         return overlay
 
     def _publish_result(
@@ -541,14 +781,34 @@ class YoloLaneDetectorNode(Node):
         # Publish validity/confidence before error so the controller consumes a
         # synchronized sample when its error callback runs.
         self.valid_pub.publish(Bool(data=bool(valid)))
+        self.lane_valid_event_pub.publish(Bool(data=bool(valid)))
+        stamp_ns = (
+            int(source.header.stamp.sec) * 1_000_000_000
+            + int(source.header.stamp.nanosec)
+        )
+        self.lane_result_pub.publish(String(data=json.dumps({
+            'stamp_ns': stamp_ns,
+            'valid': bool(valid),
+            'confidence': float(confidence),
+        })))
         self.confidence_pub.publish(Float32(data=float(confidence)))
         error = geometry.get('center_error') if valid else 0.0
         self.error_pub.publish(Float32(data=float(error or 0.0)))
 
     def _run_inference(self) -> None:
-        if self.latest_input is None:
+        if not self._begin_camera_work():
             return
-        stamp, bgr, processed, bev_mask, source = self.latest_input
+        try:
+            self._run_inference_guarded()
+        finally:
+            self._finish_camera_work()
+
+    def _run_inference_guarded(self) -> None:
+        with self._subscription_condition:
+            latest_input = self.latest_input
+        if latest_input is None:
+            return
+        stamp, bgr, processed, bev_mask, source = latest_input
         if stamp == self.last_processed_stamp:
             return
         self.last_processed_stamp = stamp
@@ -560,7 +820,9 @@ class YoloLaneDetectorNode(Node):
                 throttle_duration_sec=5.0)
             inference_input = 'raw'
         inference_image = bgr if inference_input == 'raw' else processed.bev
-        validation_mask = self._raw_mask(bgr) if inference_input == 'raw' else bev_mask
+        validation_mask = (
+            self._raw_mask(bgr)
+            if inference_input == 'raw' else bev_mask)
         started_at = perf_counter()
         result = self.model.predict(
             inference_image, **self._prediction_arguments())[0]
@@ -581,8 +843,12 @@ class YoloLaneDetectorNode(Node):
         left_box = None if left is None else left['box']
         right_box = None if right is None else right['box']
         if inference_input == 'bev':
-            left_box = None if left_box is None else self._mapped_box(left_box, processed)
-            right_box = None if right_box is None else self._mapped_box(right_box, processed)
+            left_box = (
+                None if left_box is None
+                else self._mapped_box(left_box, processed))
+            right_box = (
+                None if right_box is None
+                else self._mapped_box(right_box, processed))
 
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
         if left_box is None and right_box is None:
@@ -617,6 +883,29 @@ class YoloLaneDetectorNode(Node):
             confidence,
             valid,
         )
+        if self._mission_mode == 'LANE_FOLLOW':
+            ratio = (
+                self._yolo_cone_bounding_box_area_ratio(
+                    result, inference_image)
+                if self._cone_detection_source == 'yolo'
+                else self._cone_bounding_box_area_ratio(bgr)
+            )
+            self.cone_area_ratio_pub.publish(Float32(data=ratio))
+            confirmed = self._cone_detector.update(
+                ratio >= float(self.get_parameter(
+                    'cone_camera_min_area_ratio').value))
+            if confirmed and not self._cone_event_sent:
+                self._cone_event_sent = True
+                self.cone_confirmed_pub.publish(Bool(data=True))
+                self.get_logger().info(
+                    'cone_confirmed: '
+                    f'{self._cone_detection_source} bbox '
+                    f'area ratio={ratio:.4f}')
+
+    def destroy_node(self) -> bool:
+        if hasattr(self, '_image_subscription'):
+            self._deactivate_image_subscription()
+        return super().destroy_node()
 
 
 def main(args=None) -> None:

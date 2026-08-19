@@ -13,4 +13,3 @@ scenario_player:
   ros__parameters:
     target_laps: 3
     step_sec: 0.45
-

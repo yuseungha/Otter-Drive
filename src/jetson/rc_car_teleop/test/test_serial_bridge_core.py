@@ -11,10 +11,12 @@ from rc_car_teleop.serial_bridge_core import (  # noqa: E402
     BridgeSafetyState,
     FaultResetPolicy,
     FrameDecision,
+    guard_steering_command_by_adc,
     parse_debug_line,
     parse_steering_status_line,
     parse_version_line,
     serial_ready_condition,
+    steering_command_to_adc,
 )
 
 
@@ -47,6 +49,41 @@ def test_active_firmware_full_steering_status() -> None:
         'enabled': True,
         'fault': False,
     }
+
+
+def test_adc_feedback_guard_releases_full_lock_as_hardware_moves() -> None:
+    calibration = {
+        'adc_left': 747,
+        'adc_center': 602,
+        'adc_right': 462,
+    }
+    first = guard_steering_command_by_adc(
+        650, 602, max_error_adc=22, **calibration)
+    assert first == 152
+    assert steering_command_to_adc(first, **calibration) == 624
+
+    advanced = guard_steering_command_by_adc(
+        650, 650, max_error_adc=22, **calibration)
+    assert advanced > first
+    assert steering_command_to_adc(advanced, **calibration) == 672
+
+    reached = guard_steering_command_by_adc(
+        650, 695, max_error_adc=22, **calibration)
+    assert reached == 650
+
+
+def test_adc_feedback_guard_crosses_center_without_exceeding_error_budget() -> None:
+    calibration = {
+        'adc_left': 747,
+        'adc_center': 602,
+        'adc_right': 462,
+    }
+    guarded = guard_steering_command_by_adc(
+        -650, 640, max_error_adc=22, **calibration)
+    target = steering_command_to_adc(guarded, **calibration)
+    assert guarded > 0
+    assert target == 618
+    assert abs(target - 640) == 22
 
 
 def test_active_firmware_version_banner() -> None:

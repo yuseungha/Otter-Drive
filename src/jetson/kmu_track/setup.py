@@ -30,6 +30,9 @@ setup(
             'actuation_monitor = kmu_track.actuation_monitor_node:main',
             'steering_sweep = kmu_track.steering_sweep:main',
             'mission_manager = kmu_track.mission_manager_node:main',
+            'sensor_mode_manager = '
+            'kmu_track.sensor_mode_manager_node:main',
+            'mode_command_mux = kmu_track.mode_command_mux_node:main',
             'scenario_player = kmu_track.scenario_player_node:main',
             'track_visualizer = kmu_track.visualizer_node:main',
             'traffic_light_detector = kmu_track.traffic_light_node:main',
@@ -38,6 +41,7 @@ setup(
             'usb_camera_source = kmu_track.usb_camera_node:main',
             'video_source = kmu_track.video_source_node:main',
             'yolo_lane_detector = kmu_track.yolo_lane_node:main',
+            'yolo_seg_lane_detector = kmu_track.yolo_seg_lane_node:main',
             'tcp_steering_sender = kmu_track.tcp_steering_sender:main',
         ],
     },

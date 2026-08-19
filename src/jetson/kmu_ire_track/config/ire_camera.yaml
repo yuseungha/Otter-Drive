@@ -1,0 +1,22 @@
+ire_camera_source:
+  ros__parameters:
+    device: /dev/video0
+    image_topic: /camera/front/image_raw
+    frame_id: front_camera
+    width: 1920
+    height: 1080
+    fps: 15.0
+    fourcc: MJPG
+    reconnect_interval_sec: 1.0
+
+# The camera launch loads these values into the combined capture + YOLO node,
+# avoiding a 6.2 MB raw ROS image transfer for every 1080p frame.
+ire_yolo_seg_lane_detector:
+  ros__parameters:
+    camera_device: /dev/video0
+    camera_frame_id: front_camera
+    camera_width: 1920
+    camera_height: 1080
+    camera_fps: 15.0
+    camera_fourcc: MJPG
+    camera_reconnect_interval_sec: 1.0

@@ -201,6 +201,81 @@ def parse_version_line(line: str) -> Optional[dict]:
     return values
 
 
+def steering_command_to_adc(
+    command: int,
+    *,
+    adc_left: int,
+    adc_center: int,
+    adc_right: int,
+) -> int:
+    """Map the final-firmware steering command to its ADC target."""
+    command = max(-1000, min(1000, int(command)))
+    if command >= 0:
+        return int(round(
+            adc_center + (adc_left - adc_center) * command / 1000.0
+        ))
+    return int(round(
+        adc_center + (adc_center - adc_right) * command / 1000.0
+    ))
+
+
+def steering_adc_to_command(
+    target_adc: int,
+    *,
+    adc_left: int,
+    adc_center: int,
+    adc_right: int,
+) -> int:
+    """Invert the final-firmware piecewise steering calibration."""
+    target_adc = max(adc_right, min(adc_left, int(target_adc)))
+    if target_adc >= adc_center:
+        command = 1000.0 * (target_adc - adc_center) / (
+            adc_left - adc_center)
+    else:
+        command = -1000.0 * (adc_center - target_adc) / (
+            adc_center - adc_right)
+    return max(-1000, min(1000, int(round(command))))
+
+
+def guard_steering_command_by_adc(
+    desired_command: int,
+    current_adc: int,
+    *,
+    max_error_adc: int,
+    adc_left: int,
+    adc_center: int,
+    adc_right: int,
+) -> int:
+    """Keep a steering target close enough to feedback to avoid stall latch.
+
+    The desired command remains the eventual destination.  Each call advances
+    the firmware target by at most ``max_error_adc`` from measured position,
+    so movement automatically releases more steering authority.
+    """
+    if not adc_right < adc_center < adc_left:
+        raise ValueError('steering ADC calibration must satisfy right<center<left')
+    if not 1 <= int(max_error_adc) <= 24:
+        raise ValueError('max_error_adc must be in 1..24')
+    desired_adc = steering_command_to_adc(
+        desired_command,
+        adc_left=adc_left,
+        adc_center=adc_center,
+        adc_right=adc_right,
+    )
+    delta = desired_adc - int(current_adc)
+    if abs(delta) <= int(max_error_adc):
+        return max(-1000, min(1000, int(desired_command)))
+    bounded_target = int(current_adc) + max(
+        -int(max_error_adc), min(int(max_error_adc), delta)
+    )
+    return steering_adc_to_command(
+        bounded_target,
+        adc_left=adc_left,
+        adc_center=adc_center,
+        adc_right=adc_right,
+    )
+
+
 def ramp_to_zero(value: int, step: int) -> int:
     """Move an integer toward zero without crossing it."""
     if value > 0:

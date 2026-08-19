@@ -12,6 +12,7 @@ from std_msgs.msg import Bool, Float32, Int32MultiArray, String
 from kmu_track.lane_control_core import (
     LaneControlConfig,
     LaneControlController,
+    actuation_gate_active,
 )
 
 
@@ -31,6 +32,8 @@ class LaneControlNode(Node):
             'ignore_mission_state', defaults.ignore_mission_state)
         self.declare_parameter('active_states', list(defaults.active_states))
         self.declare_parameter('control_rate_hz', 20.0)
+        self.declare_parameter('command_topic', '')
+        self.declare_parameter('manage_serial_gate', False)
         for name in (
             'error_timeout_sec',
             'min_confidence',
@@ -44,10 +47,14 @@ class LaneControlNode(Node):
             'steer_epsilon',
             'lost_hold_sec',
             'lost_decay_sec',
+            'lost_coast_sec',
             'arming_neutral_sec',
             'speed_timeout_sec',
             'stopped_speed_mps',
             'center_fallback_delay_sec',
+            'steering_curve_exponent',
+            'full_lock_threshold',
+            'rolling_start_sec',
         ):
             self.declare_parameter(name, float(getattr(defaults, name)))
         for name in (
@@ -59,6 +66,7 @@ class LaneControlNode(Node):
             'max_counts_left',
             'max_counts_right',
             'max_delta_counts_per_tick',
+            'rolling_start_max_counts',
             'recover_frames',
             'throttle_base',
             'throttle_curve',
@@ -68,12 +76,16 @@ class LaneControlNode(Node):
             self.declare_parameter(name, int(getattr(defaults, name)))
 
         self.dry_run = bool(self.get_parameter('dry_run').value)
+        self.manage_serial_gate = bool(
+            self.get_parameter('manage_serial_gate').value)
         enabled = bool(self.get_parameter('enabled').value)
         if (
             not self.dry_run
             and not bool(self.get_parameter('hardware_confirmed').value)
         ):
             raise RuntimeError('live output requires hardware_confirmed:=true')
+        if self.dry_run and self.manage_serial_gate:
+            raise RuntimeError('dry-run output cannot manage the serial gate')
 
         config_values = {}
         for field_name in LaneControlConfig.__dataclass_fields__:
@@ -86,14 +98,24 @@ class LaneControlNode(Node):
         self.controller = LaneControlController(
             LaneControlConfig(**config_values), clock=self._now_sec)
 
-        command_topic = (
-            '/rc_car/drive_cmd_preview'
-            if self.dry_run else '/rc_car/drive_cmd'
-        )
+        command_topic = str(self.get_parameter('command_topic').value).strip()
+        if not command_topic:
+            command_topic = (
+                '/rc_car/drive_cmd_preview'
+                if self.dry_run else '/rc_car/drive_cmd'
+            )
         self.command_pub = self.create_publisher(
             Int32MultiArray, command_topic, 10)
         self.status_pub = self.create_publisher(
             String, '/vehicle/lane_control_status', 10)
+        self.arm_pub = None
+        self.deadman_pub = None
+        self._actuation_gate_active = False
+        if self.manage_serial_gate:
+            self.arm_pub = self.create_publisher(
+                Bool, '/rc_car/operator_armed', 10)
+            self.deadman_pub = self.create_publisher(
+                Bool, '/rc_car/operator_deadman', 10)
         self._lane_valid = False
         self._lane_confidence = 0.0
 
@@ -183,13 +205,33 @@ class LaneControlNode(Node):
 
     def _publish_command(self, output) -> None:
         message = Int32MultiArray()
-        message.data = [output.throttle, output.steering, output.gear]
+        message.data = [output.throttle, output.steering]
         self.command_pub.publish(message)
+
+    def _publish_actuation_gate(self, output) -> None:
+        if self.arm_pub is None or self.deadman_pub is None:
+            return
+        active = actuation_gate_active(
+            output, serial_ready=self.controller.serial_ready)
+        message = Bool(data=active)
+        if active:
+            self.arm_pub.publish(message)
+            self.deadman_pub.publish(message)
+        else:
+            # Match the verified manual sequence: release deadman, then disarm.
+            self.deadman_pub.publish(message)
+            self.arm_pub.publish(message)
+        if active != self._actuation_gate_active:
+            state = 'ACTIVE' if active else 'STOPPED'
+            self.get_logger().info(
+                f'Autonomous serial gate {state}: {output.gate_reason}')
+        self._actuation_gate_active = active
 
     def _on_timer(self) -> None:
         output = self.controller.command()
         if output.publish:
             self._publish_command(output)
+        self._publish_actuation_gate(output)
         status = output.status()
         status.update({
             'mode': 'preview' if self.dry_run else 'live',
@@ -203,11 +245,14 @@ class LaneControlNode(Node):
 
     def destroy_node(self) -> bool:
         if self.controller.config.enabled and rclpy.ok(context=self.context):
-            neutral = Int32MultiArray(
-                data=[0, 0, self.controller.config.gear])
+            neutral = Int32MultiArray(data=[0, 0])
             for _ in range(3):
                 self.command_pub.publish(neutral)
                 time.sleep(0.05)
+        if self.deadman_pub is not None and self.arm_pub is not None:
+            disabled = Bool(data=False)
+            self.deadman_pub.publish(disabled)
+            self.arm_pub.publish(disabled)
         return super().destroy_node()
 
 

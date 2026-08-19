@@ -11,10 +11,12 @@ usage() {
 Usage:
   ./scripts/run_competition.sh --check
   ./scripts/run_competition.sh --dry-run
+  ./scripts/run_competition.sh --cone-dry-run
   ./scripts/run_competition.sh --video /absolute/path/to/video.mp4
   ./scripts/run_competition.sh --live
 
 --dry-run is the default and never starts the serial bridge.
+--cone-dry-run starts RPLIDAR perception only and never starts an actuator bridge.
 --live requires KMU_HARDWARE_CONFIRMED=true and a real serial device.
 EOF
 }
@@ -23,6 +25,7 @@ while (($#)); do
   case "$1" in
     --check) mode=check ;;
     --dry-run) mode=dry-run ;;
+    --cone-dry-run) mode=cone-dry-run ;;
     --live) mode=live ;;
     --video)
       [[ $# -ge 2 ]] || { echo 'ERROR: --video requires a path.' >&2; exit 2; }
@@ -48,6 +51,8 @@ model=${KMU_MODEL_PATH:-${project_root}/models/road_best.pt}
 model_sha=${KMU_MODEL_SHA256:-b54bb33713d753ac7860ebad33c2f166ce9230f63fdf5c30a0528bac45ea779c}
 camera_requested=${KMU_CAMERA_DEVICE:-/dev/v4l/by-id/usb-046d_Logitech_BRIO_5FD2713E-video-index0}
 camera=${camera_requested}
+lidar_requested=${KMU_LIDAR_DEVICE:-/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0}
+lidar=${lidar_requested}
 serial=${KMU_SERIAL_DEVICE:-/dev/serial/by-id/REPLACE_WITH_ARDUINO_DEVICE}
 domain_id=${KMU_ROS_DOMAIN_ID:-86}
 display=${KMU_DISPLAY:-false}
@@ -71,6 +76,12 @@ if [[ ${mode} == dry-run || ${mode} == live ]]; then
 fi
 if [[ ${mode} == video ]]; then
   [[ -r ${video_path} ]] || fail "video is missing or unreadable: ${video_path}"
+fi
+if [[ ${mode} == cone-dry-run ]]; then
+  [[ -e ${lidar_requested} ]] || fail "LiDAR device is missing: ${lidar_requested}"
+  lidar=$(readlink -f -- "${lidar_requested}")
+  [[ ${lidar} == /dev/ttyUSB* || ${lidar} == /dev/ttyACM* ]] || \
+    fail "LiDAR did not resolve to /dev/ttyUSB* or /dev/ttyACM*: ${lidar}"
 fi
 if [[ ${mode} == live ]]; then
   [[ ${confirmed} == true ]] || fail 'set KMU_HARDWARE_CONFIRMED=true only after the hardware runbook'
@@ -121,19 +132,14 @@ PY
   exit 0
 fi
 
-launch_command=(ros2 launch kmu_track lane_drive_live.launch.py
-  camera_config:="${project_root}/configs/camera.yaml"
-  perception_config:="${project_root}/configs/perception.yaml"
-  control_config:="${project_root}/configs/lane_control.yaml"
-  video_config:="${project_root}/configs/video.yaml"
-  camera_device:="${camera}"
-  model_path:="${model}"
-  display:="${display}"
-  enabled:=true
-  steering_only:="${steering_only}")
-
-if [[ ${mode} == live ]]; then
-  launch_command+=(dry_run:=false hardware_confirmed:=true serial_bridge:=true serial_port:="${serial}")
+if [[ ${mode} == cone-dry-run ]]; then
+  launch_command=(ros2 launch lidar_cone_planner cone_lidar_cv.launch.py
+    serial_port:="${lidar}"
+    planner_config:="${project_root}/configs/cone/cone_planner.yaml"
+    system_config:="${project_root}/configs/cone/cone_lidar_cv.yaml"
+    planning_frame:=base_link
+    viewer_enabled:=false
+    viewer_record_path:=/tmp/kmu-cone-viewer-latest.png)
 elif [[ ${mode} == video ]]; then
   launch_command=(ros2 launch kmu_track lane_drive_video.launch.py
     perception_config:="${project_root}/configs/perception.yaml"
@@ -145,7 +151,21 @@ elif [[ ${mode} == video ]]; then
     enabled:=true dry_run:=true hardware_confirmed:=false
     steering_only:=true serial_bridge:=false loop:=false)
 else
-  launch_command+=(dry_run:=true hardware_confirmed:=false serial_bridge:=false)
+  launch_command=(ros2 launch kmu_track lane_drive_live.launch.py
+    camera_config:="${project_root}/configs/camera.yaml"
+    perception_config:="${project_root}/configs/perception.yaml"
+    control_config:="${project_root}/configs/lane_control.yaml"
+    video_config:="${project_root}/configs/video.yaml"
+    camera_device:="${camera}"
+    model_path:="${model}"
+    display:="${display}"
+    enabled:=true
+    steering_only:="${steering_only}")
+  if [[ ${mode} == live ]]; then
+    launch_command+=(dry_run:=false hardware_confirmed:=true serial_bridge:=true serial_port:="${serial}")
+  else
+    launch_command+=(dry_run:=true hardware_confirmed:=false serial_bridge:=false)
+  fi
 fi
 
 timestamp=$(date '+%Y%m%d-%H%M%S')

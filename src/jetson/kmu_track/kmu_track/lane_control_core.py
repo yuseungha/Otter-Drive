@@ -16,7 +16,7 @@ class LaneControlConfig:
     require_serial_ready: bool = True
     ignore_mission_state: bool = False
     active_states: Sequence[str] = ('LANE_FOLLOW', 'LAP_RUN')
-    error_timeout_sec: float = 0.30
+    error_timeout_sec: float = 0.55
     min_confidence: float = 0.30
     error_jump_limit: float = 0.45
     error_lpf_alpha: float = 0.65
@@ -26,19 +26,28 @@ class LaneControlConfig:
     k_heading: float = 0.35
     integral_limit: float = 0.20
     steering_sign: int = -1
-    max_counts: int = 600
+    max_counts: int = 650
     deadband_counts: int = 70
     deadband_counts_left: int = 0
     deadband_counts_right: int = 0
     max_counts_left: int = 0
     max_counts_right: int = 0
     steer_epsilon: float = 0.03
+    steering_curve_exponent: float = 1.0
+    # Zero disables the step.  When enabled, a decisive preview demand maps
+    # directly to the existing bounded maximum steering angle.
+    full_lock_threshold: float = 0.0
     max_delta_counts_per_tick: int = 120
+    # Initial steering ceiling for a progressive rolling start.  The ceiling
+    # rises linearly to the normal side maximum over ``rolling_start_sec``.
+    rolling_start_sec: float = 0.0
+    rolling_start_max_counts: int = 220
     lost_hold_sec: float = 0.40
     lost_decay_sec: float = 1.00
+    lost_coast_sec: float = 0.0
     recover_frames: int = 3
-    throttle_base: int = 300
-    throttle_curve: int = 180
+    throttle_base: int = 550
+    throttle_curve: int = 550
     throttle_lost: int = 0
     gear: int = -1
     arming_neutral_sec: float = 1.0
@@ -66,8 +75,19 @@ class LaneControlConfig:
                     f'{side} deadband must be non-negative and below max')
         if self.max_delta_counts_per_tick <= 0:
             raise ValueError('max_delta_counts_per_tick must be positive')
+        if not 0.25 <= self.steering_curve_exponent <= 2.0:
+            raise ValueError('steering_curve_exponent must be in [0.25, 2.0]')
+        if not 0.0 <= self.full_lock_threshold <= 1.0:
+            raise ValueError('full_lock_threshold must be in [0, 1]')
+        if self.rolling_start_sec < 0.0:
+            raise ValueError('rolling_start_sec must be non-negative')
+        if not 0 < self.rolling_start_max_counts <= self.max_counts:
+            raise ValueError(
+                'rolling_start_max_counts must lie in (0, max_counts]')
         if self.lost_hold_sec < 0.0 or self.lost_decay_sec < self.lost_hold_sec:
             raise ValueError('lane-loss durations are invalid')
+        if self.lost_coast_sec < 0.0:
+            raise ValueError('lost_coast_sec must be non-negative')
         if self.recover_frames < 1:
             raise ValueError('recover_frames must be at least one')
         if self.gear not in (-1, 1):
@@ -100,12 +120,37 @@ class LaneControlOutput:
     deadband_applied: int = 0
     max_applied: int = 0
     side: str = 'CENTER'
+    rolling_start_active: bool = False
+    rolling_start_elapsed_ms: float = 0.0
+    rolling_start_limit: int = 0
 
     def status(self) -> dict:
         """Return a JSON-ready status dictionary."""
         data = asdict(self)
         data['steering_counts'] = data.pop('steering')
         return data
+
+
+ACTUATION_GATE_REASONS = frozenset({
+    'running',
+    'rolling_start',
+    'lane_lost_hold',
+    'lane_lost_decay',
+    'lane_lost_coast',
+})
+
+
+def actuation_gate_active(
+    output: LaneControlOutput,
+    *,
+    serial_ready: bool,
+) -> bool:
+    """Keep arm/deadman active only for fresh, intentionally drivable output."""
+    return bool(
+        serial_ready
+        and output.publish
+        and output.gate_reason in ACTUATION_GATE_REASONS
+    )
 
 
 class LaneControlController:
@@ -143,6 +188,7 @@ class LaneControlController:
         self._loss_start_steering = 0
         self._loss_start_throttle = 0
         self._stop_since: Optional[float] = None
+        self._rolling_started_at: Optional[float] = None
         self.sample_rejected = False
 
     def update_lane_sample(
@@ -159,6 +205,7 @@ class LaneControlController:
         self.confidence = max(0.0, min(1.0, float(confidence)))
         sample_valid = bool(valid) and self.confidence >= self.config.min_confidence
         self.sample_rejected = False
+        recovered_now = False
 
         if sample_valid:
             if self.lost_since is not None:
@@ -169,6 +216,7 @@ class LaneControlController:
                     self.derivative = 0.0
                     self.integral = 0.0
                     self.last_filter_at = timestamp
+                    recovered_now = True
             else:
                 self.recover_count = self.config.recover_frames
             self.lane_valid = self.lost_since is None
@@ -182,21 +230,34 @@ class LaneControlController:
 
         if not sample_valid:
             return
-        if (
-            self.last_filter_at is not None
-            and abs(self.raw_error - self.filtered_error) > self.config.error_jump_limit
-        ):
-            self.sample_rejected = True
+        if recovered_now:
+            # A remembered curve can be far from the newly visible marking.
+            # Recovery has already required consecutive valid frames, so snap
+            # to that fresh measurement instead of letting jump rejection hold
+            # a stale full-lock command indefinitely.
+            self.filtered_error = self.raw_error
+            self.derivative = 0.0
+            self.last_filter_at = timestamp
             return
-
         if self.last_filter_at is None:
             self.filtered_error = self.raw_error
             self.derivative = 0.0
             self.last_filter_at = timestamp
             return
         previous = self.filtered_error
+        measurement = self.raw_error
+        innovation = measurement - previous
+        if abs(innovation) > self.config.error_jump_limit:
+            # Bound a large perception step instead of dropping it forever.
+            # Repeated valid frames therefore converge to the new marking and
+            # cannot leave the controller stuck on an obsolete full lock.
+            self.sample_rejected = True
+            measurement = previous + (
+                self.config.error_jump_limit
+                if innovation > 0.0 else -self.config.error_jump_limit
+            )
         alpha = self.config.error_lpf_alpha
-        self.filtered_error = alpha * previous + (1.0 - alpha) * self.raw_error
+        self.filtered_error = alpha * previous + (1.0 - alpha) * measurement
         dt = max(1e-3, timestamp - self.last_filter_at)
         self.derivative = (self.filtered_error - previous) / dt
         self.last_filter_at = timestamp
@@ -280,6 +341,9 @@ class LaneControlController:
         deadband_applied: int = 0,
         max_applied: int = 0,
         side: str = 'CENTER',
+        rolling_start_active: bool = False,
+        rolling_start_elapsed_ms: float = 0.0,
+        rolling_start_limit: int = 0,
     ) -> LaneControlOutput:
         self.last_throttle = int(throttle)
         self.last_steering = int(steering)
@@ -313,9 +377,13 @@ class LaneControlController:
             deadband_applied=int(deadband_applied),
             max_applied=int(max_applied),
             side=str(side),
+            rolling_start_active=bool(rolling_start_active),
+            rolling_start_elapsed_ms=float(rolling_start_elapsed_ms),
+            rolling_start_limit=int(rolling_start_limit),
         )
 
     def _safe_stop(self, reason: str, now: float) -> LaneControlOutput:
+        self._rolling_started_at = None
         if self._stop_since is None:
             self._stop_since = now
         target = 0 if self._can_center(now) else self.last_steering
@@ -324,6 +392,7 @@ class LaneControlController:
             True, 0, steering, reason, now, rate_limited=rate_limited)
 
     def _lane_loss_output(self, now: float) -> LaneControlOutput:
+        self._rolling_started_at = None
         elapsed = max(0.0, now - float(self.lost_since))
         if elapsed <= self.config.lost_hold_sec:
             self._stop_since = None
@@ -348,6 +417,22 @@ class LaneControlController:
                 throttle,
                 steering,
                 'lane_lost_decay',
+                now,
+                rate_limited=rate_limited,
+            )
+        coast_ends_at = self.config.lost_decay_sec + self.config.lost_coast_sec
+        if (
+            not self.config.steering_only
+            and self.config.lost_coast_sec > 0.0
+            and elapsed <= coast_ends_at
+        ):
+            self._stop_since = None
+            steering, rate_limited = self._rate_limit(0)
+            return self._make_output(
+                True,
+                self.config.throttle_lost,
+                steering,
+                'lane_lost_coast',
                 now,
                 rate_limited=rate_limited,
             )
@@ -386,6 +471,14 @@ class LaneControlController:
             return self._lane_loss_output(timestamp)
 
         self._stop_since = None
+        if self._rolling_started_at is None:
+            self._rolling_started_at = timestamp
+        rolling_elapsed = max(0.0, timestamp - self._rolling_started_at)
+        rolling_start_active = bool(
+            not self.config.steering_only
+            and self.config.rolling_start_sec > 0.0
+            and rolling_elapsed < self.config.rolling_start_sec
+        )
         p_term = self.config.kp * self.filtered_error
         d_term = self.config.kd * self.derivative
         h_term = self._heading_term(timestamp)
@@ -402,7 +495,16 @@ class LaneControlController:
         if not saturated:
             self.integral = candidate_integral
         normalized = max(-1.0, min(1.0, normalized))
+        if (
+            self.config.full_lock_threshold > 0.0
+            and abs(normalized) >= self.config.full_lock_threshold
+        ):
+            normalized = 1.0 if normalized > 0.0 else -1.0
+            saturated = True
         signed = self.config.steering_sign * normalized
+        if signed != 0.0:
+            shaped = abs(signed) ** self.config.steering_curve_exponent
+            signed = shaped if signed > 0.0 else -shaped
         if abs(signed) < self.config.steer_epsilon:
             target_steering = 0
             side = 'CENTER'
@@ -429,6 +531,24 @@ class LaneControlController:
             -max_applied if side != 'CENTER' else 0,
             min(max_applied if side != 'CENTER' else 0, target_steering),
         )
+        rolling_limit = 0
+        if rolling_start_active:
+            initial_limit = min(
+                self.config.rolling_start_max_counts,
+                max_applied,
+            )
+            rolling_progress = min(
+                1.0,
+                rolling_elapsed / max(1e-6, self.config.rolling_start_sec),
+            )
+            rolling_limit = int(round(
+                initial_limit
+                + (max_applied - initial_limit) * rolling_progress
+            ))
+            target_steering = max(
+                -rolling_limit,
+                min(rolling_limit, target_steering),
+            )
         steering, rate_limited = self._rate_limit(target_steering)
         steering_ratio = abs(steering) / max(
             1.0, float(max_applied or self.config.max_counts))
@@ -440,7 +560,7 @@ class LaneControlController:
             True,
             throttle,
             steering,
-            'running',
+            'rolling_start' if rolling_start_active else 'running',
             timestamp,
             p_term=p_term,
             d_term=d_term,
@@ -451,4 +571,7 @@ class LaneControlController:
             deadband_applied=deadband_applied,
             max_applied=max_applied,
             side=side,
+            rolling_start_active=rolling_start_active,
+            rolling_start_elapsed_ms=rolling_elapsed * 1000.0,
+            rolling_start_limit=rolling_limit,
         )

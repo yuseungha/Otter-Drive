@@ -18,12 +18,12 @@ PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 colcon --log-base "${colcon_root}/l
   --install-base "${colcon_root}/install" \
   --symlink-install \
   --base-paths src/jetson \
-  --packages-select rc_car_teleop kmu_track
+  --packages-select rc_car_teleop kmu_track lidar_cone_planner rplidar_ros
 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' \
   colcon --log-base "${colcon_root}/log" test \
   --build-base "${colcon_root}/build" \
   --install-base "${colcon_root}/install" \
-  --packages-select rc_car_teleop kmu_track
+  --packages-select rc_car_teleop kmu_track lidar_cone_planner rplidar_ros
 PYTHONNOUSERSITE=1 colcon --log-base "${colcon_root}/log" test-result \
   --test-result-base "${colcon_root}/build" \
   --verbose

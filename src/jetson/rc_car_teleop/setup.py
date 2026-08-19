@@ -12,6 +12,7 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,6 +27,8 @@ setup(
             'serial_bridge = rc_car_teleop.serial_bridge:main',
             'tcp_steering_receiver = '
             'rc_car_teleop.tcp_steering_receiver:main',
+            'ackermann_to_drive_cmd = '
+            'rc_car_teleop.ackermann_to_drive_cmd:main',
         ],
     },
 )

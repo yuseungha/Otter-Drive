@@ -8,30 +8,48 @@ lane_control:
     ignore_mission_state: false
     active_states: ['LANE_FOLLOW', 'LAP_RUN']
     control_rate_hz: 20.0
-    error_timeout_sec: 0.30
+    # The recorded source is 5 FPS; 0.55 s tolerates normal inference jitter
+    # while still failing closed after fewer than three missed frames.
+    error_timeout_sec: 0.55
     min_confidence: 0.30
     error_jump_limit: 0.45
-    error_lpf_alpha: 0.65
-    kp: 0.80
-    kd: 0.12
+    # Faster camera response with stronger look-ahead steering.
+    error_lpf_alpha: 0.50
+    kp: 0.95
+    kd: 0.10
     ki: 0.0
-    k_heading: 0.35
+    k_heading: 0.60
     integral_limit: 0.20
     steering_sign: -1
-    max_counts: 900
+    max_counts: 650
     deadband_counts: 110
     deadband_counts_left: 0
     deadband_counts_right: 0
+    # Zero uses the verified +/-650 planner limit.  The serial bridge releases
+    # that demand progressively against fresh ADC feedback on the ground.
     max_counts_left: 0
     max_counts_right: 0
     steer_epsilon: 0.03
+    # Magnify small errors into decisive steering without raising +/-650.
+    steering_curve_exponent: 1.0
+    # Above 8% combined preview demand, request the existing +/-650 maximum.
+    # The unchanged 120-count/tick limiter still ramps into full lock.
+    full_lock_threshold: 0.08
     max_delta_counts_per_tick: 120
-    lost_hold_sec: 0.40
-    lost_decay_sec: 1.00
+    # Start at the largest command that reached its ADC target on the floor,
+    # then progressively open the ceiling to full lock while the tires roll.
+    rolling_start_sec: 3.00
+    rolling_start_max_counts: 220
+    lost_hold_sec: 0.20
+    lost_decay_sec: 0.80
+    # After remembered geometry expires, coast straight at reduced throttle
+    # briefly so a marking just beyond the blind curve can be reacquired.
+    lost_coast_sec: 5.00
     recover_frames: 3
-    throttle_base: 300
-    throttle_curve: 180
-    throttle_lost: 0
+    # Selected after the airborne 500-count probe on 2026-08-20.
+    throttle_base: 550
+    throttle_curve: 550
+    throttle_lost: 300
     gear: -1
     arming_neutral_sec: 1.0
     speed_timeout_sec: 0.50

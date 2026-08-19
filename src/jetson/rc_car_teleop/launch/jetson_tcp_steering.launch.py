@@ -20,7 +20,7 @@ def generate_launch_description() -> LaunchDescription:
                 'port': ParameterValue(
                     LaunchConfiguration('port'), value_type=int),
                 'command_timeout_sec': 0.30,
-                'max_abs_steering': 900,
+                'max_abs_steering': 650,
             }],
             on_exit=Shutdown(
                 reason='TCP steering receiver exited; stopping bridge'),

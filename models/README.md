@@ -1,14 +1,17 @@
 # Models
 
-Model binaries are not committed to normal Git history. The active model is
-`road_best.pt`; its expected SHA-256 and class metadata are recorded in
+Model binaries are not committed to normal Git history. The original detector
+is `road_best.pt`. The segmentation planner uses `center_lane_best.pt`. Their
+expected SHA-256 values and class metadata are recorded in
 `../configs/model_manifest.yaml` and `.env.example`.
 
 Before competition use:
 
 ```bash
 sha256sum models/road_best.pt
+sha256sum models/center_lane_best.pt
 ```
 
-The expected classes are `lane1` and `lane2` and the expected task is
-Ultralytics object detection.
+`road_best.pt` is an Ultralytics detection model with `lane1`/`lane2` classes.
+`center_lane_best.pt` is an Ultralytics segmentation model with `center`/`lane`
+classes. They require different ROS inference nodes and are not interchangeable.

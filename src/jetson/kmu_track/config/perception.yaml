@@ -41,6 +41,18 @@ lane_preprocessor:
 yolo_lane_detector:
   ros__parameters:
     image_topic: /camera/front/image_raw
+    # Integrated sensor-mode launch overrides this true. The detector then
+    # owns no image subscription during CONE_INIT/CONE_SLALOM/SAFE_STOP.
+    managed_subscription: false
+    cone_camera_min_area_ratio: 0.015
+    cone_camera_confirm_frames: 3
+    # auto: use a matching YOLO class when the model provides one; the current
+    # lane1/lane2-only model falls back to an orange connected-component bbox.
+    cone_class_names: [cone, traffic_cone, lava_cone]
+    cone_detection_source: auto
+    cone_orange_lower_hsv: [3, 100, 90]
+    cone_orange_upper_hsv: [25, 255, 255]
+    cone_morphology_kernel: 5
     roi_top_ratio: 0.45
     bev_width: 320
     bev_height: 240
@@ -63,7 +75,7 @@ yolo_lane_detector:
     device: auto
     half_precision: true
     inference_rate_hz: 15.0
-    max_detections: 2
+    max_detections: 8
     warmup: true
     left_class_name: lane1
     right_class_name: lane2

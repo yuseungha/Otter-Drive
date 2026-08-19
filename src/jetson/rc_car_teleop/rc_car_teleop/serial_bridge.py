@@ -17,6 +17,7 @@ from rc_car_teleop.serial_bridge_core import (
     parse_debug_line,
     parse_steering_status_line,
     serial_ready_condition,
+    guard_steering_command_by_adc,
     validate_bridge_config,
 )
 
@@ -53,6 +54,12 @@ class SerialBridge(Node):
             'steering_min': 0,
             'steering_max': 0,
             'allow_fault_reset': False,
+            'steering_feedback_guard': False,
+            'steering_feedback_timeout_sec': 0.30,
+            'steering_adc_max_error': 22,
+            'steering_adc_left': 747,
+            'steering_adc_center': 602,
+            'steering_adc_right': 462,
             'stale_steer_hold_sec': 0.20,
             'stale_steer_ramp_counts_per_tick': 120,
             'estop_center_rate_counts_per_tick': 120,
@@ -82,6 +89,29 @@ class SerialBridge(Node):
             self.get_parameter('steering_max').value)
         self._allow_fault_reset = bool(
             self.get_parameter('allow_fault_reset').value)
+        self._steering_feedback_guard = bool(
+            self.get_parameter('steering_feedback_guard').value)
+        self._steering_feedback_timeout = float(
+            self.get_parameter('steering_feedback_timeout_sec').value)
+        self._steering_adc_max_error = int(
+            self.get_parameter('steering_adc_max_error').value)
+        self._steering_adc_left = int(
+            self.get_parameter('steering_adc_left').value)
+        self._steering_adc_center = int(
+            self.get_parameter('steering_adc_center').value)
+        self._steering_adc_right = int(
+            self.get_parameter('steering_adc_right').value)
+        if not 0.05 <= self._steering_feedback_timeout <= 1.0:
+            raise ValueError('steering_feedback_timeout_sec must be in 0.05..1.0')
+        # Validate the calibration and the firmware-stall safety margin.
+        guard_steering_command_by_adc(
+            0,
+            self._steering_adc_center,
+            max_error_adc=self._steering_adc_max_error,
+            adc_left=self._steering_adc_left,
+            adc_center=self._steering_adc_center,
+            adc_right=self._steering_adc_right,
+        )
         command_timeout = float(
             self.get_parameter('command_timeout_sec').value)
         stale_steer_hold = float(
@@ -136,6 +166,8 @@ class SerialBridge(Node):
         self._last_stale_warning_at = float('-inf')
         self._last_stats_at = time.monotonic()
         self._last_debug_warning_at = float('-inf')
+        self._steering_current_adc = None
+        self._steering_feedback_at = None
         self._write_times = deque()
         self._rx_line_times = deque()
         self._stats = {
@@ -286,6 +318,8 @@ class SerialBridge(Node):
             # A fresh explicit false transition acknowledges a prior timeout
             # and permits a later manual arm. No automatic re-arm occurs.
             self._host_timeout_latched = False
+            self._safety.command_stale = False
+            self._command_stale_pub.publish(self._bool_message(False))
             return
         if not self._drive_enabled or not self._limits_confirmed:
             self.get_logger().error('Operator arm rejected: drive is locked')
@@ -445,6 +479,8 @@ class SerialBridge(Node):
         self._operator_armed = False
         self._operator_deadman = False
         self._stop_pending = False
+        self._steering_current_adc = None
+        self._steering_feedback_at = None
         self._safety.last_command_at = None
         self._safety.throttle = 0
         self._safety.steering = 0
@@ -467,6 +503,8 @@ class SerialBridge(Node):
         self._operator_armed = False
         self._operator_deadman = False
         self._stop_pending = False
+        self._steering_current_adc = None
+        self._steering_feedback_at = None
         self._safety.last_command_at = None
         if block_recovery:
             self._recovery_blocked = True
@@ -553,7 +591,25 @@ class SerialBridge(Node):
             self._request_stop('estop')
             return
         # Final Arduino protocol is exactly "D <throttle> <steering>\n".
-        payload = f'D {decision.throttle} {decision.steering}\n'.encode('ascii')
+        steering = decision.steering
+        if getattr(self, '_steering_feedback_guard', False):
+            feedback_at = getattr(self, '_steering_feedback_at', None)
+            if (
+                self._steering_current_adc is None
+                or feedback_at is None
+                or now - feedback_at > self._steering_feedback_timeout
+            ):
+                self._request_stop('steering_feedback_stale')
+                return
+            steering = guard_steering_command_by_adc(
+                steering,
+                self._steering_current_adc,
+                max_error_adc=self._steering_adc_max_error,
+                adc_left=self._steering_adc_left,
+                adc_center=self._steering_adc_center,
+                adc_right=self._steering_adc_right,
+            )
+        payload = f'D {decision.throttle} {steering}\n'.encode('ascii')
         if self._write_frame(payload) and decision.stale:
             if decision.throttle == 0 and decision.steering == 0:
                 self._stats['stale_neutral_frames'] += 1
@@ -608,6 +664,8 @@ class SerialBridge(Node):
         parsed = parse_debug_line(line)
         steering_status = parse_steering_status_line(line)
         if steering_status is not None:
+            self._steering_current_adc = steering_status['current_adc']
+            self._steering_feedback_at = now
             status_message = String()
             status_message.data = json.dumps(
                 steering_status, sort_keys=True)
