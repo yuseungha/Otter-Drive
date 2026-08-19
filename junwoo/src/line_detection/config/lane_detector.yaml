@@ -1,5 +1,0 @@
-computer_vision_node:
-  ros__parameters:
-    image_topic: /camera/image_raw
-    src_pts: [0.40, 0.55, 0.60, 0.55, 0.99, 0.98, 0.01, 0.98]
-    dst_pts: [0.18, 0.0, 0.82, 0.0, 0.82, 1.0, 0.18, 1.0]

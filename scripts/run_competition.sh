@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+install_setup=${project_root}/.colcon/install/setup.bash
+mode=dry-run
+video_path=''
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./scripts/run_competition.sh --check
+  ./scripts/run_competition.sh --dry-run
+  ./scripts/run_competition.sh --video /absolute/path/to/video.mp4
+  ./scripts/run_competition.sh --live
+
+--dry-run is the default and never starts the serial bridge.
+--live requires KMU_HARDWARE_CONFIRMED=true and a real serial device.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --check) mode=check ;;
+    --dry-run) mode=dry-run ;;
+    --live) mode=live ;;
+    --video)
+      [[ $# -ge 2 ]] || { echo 'ERROR: --video requires a path.' >&2; exit 2; }
+      mode=video
+      video_path=$2
+      shift
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [[ -r ${project_root}/.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${project_root}/.env"
+  set +a
+fi
+
+image=${KMU_CONTAINER_IMAGE:-sandikookmin:cuda126}
+model=${KMU_MODEL_PATH:-${project_root}/models/road_best.pt}
+model_sha=${KMU_MODEL_SHA256:-b54bb33713d753ac7860ebad33c2f166ce9230f63fdf5c30a0528bac45ea779c}
+camera_requested=${KMU_CAMERA_DEVICE:-/dev/v4l/by-id/usb-046d_Logitech_BRIO_5FD2713E-video-index0}
+camera=${camera_requested}
+serial=${KMU_SERIAL_DEVICE:-/dev/serial/by-id/REPLACE_WITH_ARDUINO_DEVICE}
+domain_id=${KMU_ROS_DOMAIN_ID:-86}
+display=${KMU_DISPLAY:-false}
+steering_only=${KMU_STEERING_ONLY:-true}
+confirmed=${KMU_HARDWARE_CONFIRMED:-false}
+container_name=kmu-autodriving-runtime
+
+fail() { echo "ERROR: $*" >&2; exit 1; }
+command -v docker >/dev/null || fail 'docker is missing'
+docker image inspect "${image}" >/dev/null 2>&1 || fail "container image is missing: ${image}"
+[[ -r ${model} ]] || fail "model is missing: ${model}"
+[[ -r ${install_setup} ]] || fail 'workspace is not built; run ./scripts/setup_jetson.sh'
+
+actual_sha=$(sha256sum "${model}" | awk '{print $1}')
+[[ ${actual_sha} == "${model_sha}" ]] || fail "model SHA-256 mismatch: ${actual_sha}"
+
+if [[ ${mode} == dry-run || ${mode} == live ]]; then
+  [[ -e ${camera_requested} ]] || fail "camera device is missing: ${camera_requested}"
+  camera=$(readlink -f -- "${camera_requested}")
+  [[ ${camera} == /dev/video* ]] || fail "camera did not resolve to /dev/video*: ${camera}"
+fi
+if [[ ${mode} == video ]]; then
+  [[ -r ${video_path} ]] || fail "video is missing or unreadable: ${video_path}"
+fi
+if [[ ${mode} == live ]]; then
+  [[ ${confirmed} == true ]] || fail 'set KMU_HARDWARE_CONFIRMED=true only after the hardware runbook'
+  [[ -e ${serial} ]] || fail "serial device is missing: ${serial}"
+  if fuser "${serial}" >/dev/null 2>&1; then
+    fail "serial device is already in use: ${serial}"
+  fi
+fi
+if docker ps -a --format '{{.Names}}' | grep -Fxq "${container_name}"; then
+  fail "container name is already in use: ${container_name}"
+fi
+
+docker_base=(
+  docker run --rm --name "${container_name}" --init
+  --runtime=nvidia --privileged --network host --ipc host
+  -e NVIDIA_VISIBLE_DEVICES=all
+  -e ROS_DOMAIN_ID="${domain_id}"
+  -e KMU_PROJECT_ROOT="${project_root}"
+  -e KMU_MODEL_PATH="${model}"
+  -e KMU_VIDEO_PATH="${video_path}"
+  -e YOLO_CONFIG_DIR=/tmp/kmu-yolo
+  -e HOME=/tmp/kmu-home
+  -v "${project_root}:${project_root}"
+  -w "${project_root}"
+)
+
+if [[ ${mode} == check ]]; then
+  "${docker_base[@]}" "${image}" bash -lc '
+    mkdir -p "$HOME" "$YOLO_CONFIG_DIR"
+    source /opt/ros/humble/setup.bash
+    source "$KMU_PROJECT_ROOT/.colcon/install/setup.bash"
+    python3 - <<PY
+import os
+import torch
+from ultralytics import YOLO
+
+assert torch.cuda.is_available()
+model = YOLO(os.environ["KMU_MODEL_PATH"])
+assert model.task == "detect"
+assert set(model.names.values()) == {"lane1", "lane2"}
+print("CUDA:", torch.cuda.get_device_name(0))
+print("MODEL:", model.task, model.names)
+PY
+    ros2 pkg prefix kmu_track
+    ros2 pkg prefix rc_car_teleop
+  '
+  echo 'PREFLIGHT=OK'
+  exit 0
+fi
+
+launch_command=(ros2 launch kmu_track lane_drive_live.launch.py
+  camera_config:="${project_root}/configs/camera.yaml"
+  perception_config:="${project_root}/configs/perception.yaml"
+  control_config:="${project_root}/configs/lane_control.yaml"
+  video_config:="${project_root}/configs/video.yaml"
+  camera_device:="${camera}"
+  model_path:="${model}"
+  display:="${display}"
+  enabled:=true
+  steering_only:="${steering_only}")
+
+if [[ ${mode} == live ]]; then
+  launch_command+=(dry_run:=false hardware_confirmed:=true serial_bridge:=true serial_port:="${serial}")
+elif [[ ${mode} == video ]]; then
+  launch_command=(ros2 launch kmu_track lane_drive_video.launch.py
+    perception_config:="${project_root}/configs/perception.yaml"
+    control_config:="${project_root}/configs/lane_control.yaml"
+    video_config:="${project_root}/configs/video.yaml"
+    video_path:="${video_path}"
+    model_path:="${model}"
+    display:="${display}"
+    enabled:=true dry_run:=true hardware_confirmed:=false
+    steering_only:=true serial_bridge:=false loop:=false)
+else
+  launch_command+=(dry_run:=true hardware_confirmed:=false serial_bridge:=false)
+fi
+
+timestamp=$(date '+%Y%m%d-%H%M%S')
+log_dir=${project_root}/logs/${timestamp}
+mkdir -p "${log_dir}"
+
+cleanup() {
+  if docker ps --format '{{.Names}}' | grep -Fxq "${container_name}"; then
+    docker stop --time 5 "${container_name}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+echo "MODE=${mode}"
+echo "LOG=${log_dir}/competition.log"
+"${docker_base[@]}" "${image}" bash -lc '
+  mkdir -p "$HOME" "$YOLO_CONFIG_DIR"
+  source /opt/ros/humble/setup.bash
+  source "$KMU_PROJECT_ROOT/.colcon/install/setup.bash"
+  exec "$@"
+' bash "${launch_command[@]}" 2>&1 | tee "${log_dir}/competition.log"

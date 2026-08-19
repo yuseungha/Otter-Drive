@@ -1,0 +1,5 @@
+# Laptop/WSL development only. Do not install this file into the Jetson host
+# Python. Jetson inference dependencies are supplied by the CUDA container.
+numpy>=1.23,<2
+ultralytics==8.4.92
+PyYAML>=6,<7

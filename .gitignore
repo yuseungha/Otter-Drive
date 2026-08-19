@@ -1,39 +1,43 @@
-# ROS build
+# ROS/colcon outputs
+.colcon/
 build/
 install/
 log/
 
 # Python
 __pycache__/
-*.pyc
-*.pyo
-.venv/
+*.py[cod]
+.pytest_cache/
+.venv*/
 venv/
 
-# IDE
-.vscode/
-.idea/
-
-# YOLO training output
+# Runtime output
+logs/
 runs/
-datasets/
+*.pid
 
-# Models and inference engines
-*.pt
-*.pth
-*.onnx
-*.engine
-
-# ROS bags and recorded data
-*.bag
-*.db3
-*.mcap
-
-# Secrets
+# Secrets and machine-local settings
 .env
 *.key
 *.pem
 
-# Operating system
+# Large/local assets
+data/*
+!data/.gitkeep
+models/*
+!models/README.md
+*.pt
+*.pth
+*.onnx
+*.engine
+*.bag
+*.db3
+*.mcap
+*.mp4
+*.mkv
+
+# Editors/OS
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db

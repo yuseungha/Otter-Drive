@@ -1,0 +1,51 @@
+lane_control:
+  ros__parameters:
+    enabled: false
+    dry_run: true
+    hardware_confirmed: false
+    steering_only: true
+    require_serial_ready: true
+    ignore_mission_state: false
+    active_states: ['LANE_FOLLOW', 'LAP_RUN']
+
+    control_rate_hz: 20.0
+    error_timeout_sec: 0.30
+    min_confidence: 0.30
+    error_jump_limit: 0.45
+    error_lpf_alpha: 0.65
+
+    kp: 0.80
+    kd: 0.12
+    ki: 0.0
+    k_heading: 0.35
+    integral_limit: 0.20
+
+    # Unverified until the airborne hardware sign check.
+    steering_sign: -1
+    max_counts: 900
+    # Firmware deadband 10 ADC is about 82 command counts; exceed it safely.
+    deadband_counts: 110
+    # Zero preserves the legacy common values until an airborne sweep measures
+    # each side independently.
+    deadband_counts_left: 0
+    deadband_counts_right: 0
+    max_counts_left: 0
+    max_counts_right: 0
+    # Tuned from 0.02: t=10 s straight preview was unnecessarily -82 counts.
+    steer_epsilon: 0.03
+    max_delta_counts_per_tick: 120
+
+    lost_hold_sec: 0.40
+    lost_decay_sec: 1.00
+    recover_frames: 3
+
+    # Preview values only; throttle-to-speed mapping is unverified.
+    throttle_base: 300
+    throttle_curve: 180
+    throttle_lost: 0
+    gear: -1
+
+    arming_neutral_sec: 1.0
+    speed_timeout_sec: 0.50
+    stopped_speed_mps: 0.03
+    center_fallback_delay_sec: 0.75
