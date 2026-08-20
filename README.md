@@ -49,6 +49,21 @@ RPLIDAR와 라바콘 플래너만 실행하며 모터·ESC·Arduino bridge는 �
 ./scripts/run_competition.sh --cone-dry-run
 ```
 
+다른 터미널에서 `/scan`, `/tf`, `/tf_static`을 rosbag으로 녹화할 수 있습니다.
+기본 저장 위치는 `data/lidar/rosbags/lidar_<날짜-시간>`이며 `Ctrl+C`로 안전하게
+종료합니다.
+
+```bash
+./scripts/record_lidar_rosbag.sh
+
+# 30초 후 자동 종료
+./scripts/record_lidar_rosbag.sh --duration 30
+```
+
+녹화 전 연결만 확인하려면 `./scripts/record_lidar_rosbag.sh --check`를 사용합니다.
+전체 옵션은 `./scripts/record_lidar_rosbag.sh --help`와
+[`docs/lidar_rosbag_recording.md`](docs/lidar_rosbag_recording.md)에서 볼 수 있습니다.
+
 LiDAR 장착 좌표와 코스 실측값은 `configs/cone/`에 있으며, 실행 전에
 `.env`의 `KMU_LIDAR_DEVICE`를 실제 by-id 장치 경로와 대조해야 합니다.
 
