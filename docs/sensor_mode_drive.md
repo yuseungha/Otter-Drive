@@ -21,6 +21,15 @@ PYTHONNOUSERSITE=1 colcon build \
 
 ## 센서 모드 dry-run
 
+권장 실행기는 카메라와 LiDAR 장치 경로, 모델 해시, 기존 컨테이너 충돌을 먼저
+검사하고 actuator bridge를 만들지 않는다.
+
+```bash
+./scripts/run_competition.sh --sensor-mode-dry-run
+```
+
+동일 launch를 직접 실행해야 할 때만 아래 명령을 사용한다.
+
 ```bash
 cd /home/sandi/KMU_AutoDriving
 source /opt/ros/humble/setup.bash
@@ -77,3 +86,31 @@ ros2 topic echo /mission/state
 ros2 topic echo /mission/sensor_mode_status
 ros2 topic echo /vehicle/command_mux_status
 ```
+
+## FSM 라바콘 모드 전환
+
+상태 토픽을 직접 덮어쓰지 않고 FSM의 합법 전이만 요청한다. 라바콘 모드 진입
+요청은 먼저 `CONE_INIT`으로 이동해 출력을 중립으로 유지한다. 카메라 구독이
+종료되고 LiDAR 구독이 활성화된 뒤 유효한 `/perception/cone_path`가 들어와야
+FSM이 `CONE_SLALOM`으로 넘어가고 cone 명령이 mux를 통과한다.
+
+```bash
+ros2 service call /sensor_mode_manager/set_cone_mode \
+  std_srvs/srv/SetBool '{data: true}'
+```
+
+라바콘 모드를 취소하거나 종료하면 `LANE_REACQUIRE`로 이동한다. LiDAR 구독을
+내리고 카메라 구독을 되살린 뒤, 설정된 횟수만큼 연속으로 유효한 차선을
+확인해야 `LANE_FOLLOW`로 복귀한다.
+
+```bash
+ros2 service call /sensor_mode_manager/set_cone_mode \
+  std_srvs/srv/SetBool '{data: false}'
+```
+
+`SAFE_STOP`에서는 이 서비스로 복구하지 않는다. 원인을 제거하고 전체 런치를
+재시작해야 한다.
+
+현재 `automatic_cone_transition_enabled`는 `false`다. 실장치 드라이런에서
+일반 주황색 영역이 2.08% 면적의 라바콘으로 오인된 사례가 있어, 실제 코스에서
+카메라 임계값을 다시 측정하기 전까지는 서비스 전환만 사용한다.

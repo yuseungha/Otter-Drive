@@ -90,6 +90,9 @@ class PlannerConfig:
     virtual_cone_step_tolerance_m: float = 0.16
     virtual_boundary_uncertainty_m: float = 0.015
     virtual_cone_confidence_weight: float = 0.70
+    # Synchronized stations interpolated from two independently confirmed
+    # rows retain a confidence penalty versus direct cone-to-cone pairs.
+    boundary_row_confidence_weight: float = 0.85
 
     # Path construction and fail-closed validity limits.
     include_vehicle_origin: bool = True
@@ -105,6 +108,14 @@ class PlannerConfig:
     # to a measured cone footprint radius when the configured corridor is wide
     # enough to preserve that additional clearance.
     cone_obstacle_radius_m: float = 0.0
+    # Course-test option: allow contact with objects already classified as
+    # cones while retaining the hard-obstacle check for all other scan points.
+    allow_cone_contact: bool = False
+    cone_obstacle_exclusion_radius_m: float = 0.0
+    # Consecutive confirmed cones closer than this value form a non-drivable
+    # fence segment. The effective limit is capped below the minimum
+    # cross-track width so opposite rows cannot be joined accidentally.
+    boundary_fence_max_gap_m: float = 0.38
     max_path_curvature_1pm: float = 3.5
     curvature_sample_distance_m: float = 0.18
     confidence_full_pairs: int = 5
@@ -149,6 +160,7 @@ class PlannerConfig:
             "path_resolution_m": self.path_resolution_m,
             "min_path_length_m": self.min_path_length_m,
             "vehicle_width_m": self.vehicle_width_m,
+            "boundary_fence_max_gap_m": self.boundary_fence_max_gap_m,
             "confidence_full_pairs": self.confidence_full_pairs,
         }
         for name, value in positive.items():
@@ -173,6 +185,9 @@ class PlannerConfig:
             "max_centerline_deviation_m": self.max_centerline_deviation_m,
             "safety_margin_m": self.safety_margin_m,
             "cone_obstacle_radius_m": self.cone_obstacle_radius_m,
+            "cone_obstacle_exclusion_radius_m": (
+                self.cone_obstacle_exclusion_radius_m
+            ),
             "max_path_curvature_1pm": self.max_path_curvature_1pm,
             "max_turn_angle_deg": self.max_turn_angle_deg,
             "virtual_cone_lateral_tolerance_m": self.virtual_cone_lateral_tolerance_m,
@@ -194,7 +209,7 @@ class PlannerConfig:
             "track_confirmation_scans": (self.track_confirmation_scans, 1),
             "pair_beam_width": (self.pair_beam_width, 1),
             "max_pairs": (self.max_pairs, 1),
-            "min_pairs_for_path": (self.min_pairs_for_path, 2),
+            "min_pairs_for_path": (self.min_pairs_for_path, 1),
             "min_real_pairs_before_virtual": (
                 self.min_real_pairs_before_virtual,
                 2,
@@ -245,12 +260,15 @@ class PlannerConfig:
             raise ValueError("min_plan_confidence must be in [0, 1]")
         if not 0.0 < self.virtual_cone_confidence_weight <= 1.0:
             raise ValueError("virtual_cone_confidence_weight must be in (0, 1]")
+        if not 0.0 < self.boundary_row_confidence_weight <= 1.0:
+            raise ValueError("boundary_row_confidence_weight must be in (0, 1]")
         if not 0.0 <= self.max_virtual_fraction < 1.0:
             raise ValueError("max_virtual_fraction must be in [0, 1)")
         for name in (
             "require_first_pair_straddle",
             "enable_single_side_fallback",
             "include_vehicle_origin",
+            "allow_cone_contact",
         ):
             if not isinstance(getattr(self, name), (bool, np.bool_)):
                 raise ValueError(f"{name} must be boolean")
@@ -272,6 +290,11 @@ class PlanResult:
     candidate_count: int = 0
     real_pair_count: int = 0
     virtual_pair_count: int = 0
+    obstacle_count: int = 0
+    minimum_obstacle_clearance_m: float = float("inf")
+    cone_fence_segment_count: int = 0
+    minimum_cone_fence_clearance_m: float = float("inf")
+    boundary_row_fallback_used: bool = False
 
     @property
     def valid(self) -> bool:
@@ -286,9 +309,19 @@ def _empty_points() -> np.ndarray:
     return np.empty((0, 2), dtype=float)
 
 
-def empty_plan_result(status: str, candidate_count: int = 0) -> PlanResult:
+def empty_plan_result(
+    status: str, candidate_count: int = 0, obstacle_count: int = 0
+) -> PlanResult:
     empty = _empty_points()
-    return PlanResult(empty, empty, empty, empty, status=status, candidate_count=candidate_count)
+    return PlanResult(
+        empty,
+        empty,
+        empty,
+        empty,
+        status=status,
+        candidate_count=candidate_count,
+        obstacle_count=obstacle_count,
+    )
 
 
 def _normalise(vector: np.ndarray) -> np.ndarray:
@@ -567,6 +600,81 @@ def detect_cones_from_scan(
     result = np.asarray(accepted, dtype=float)
     order = np.lexsort((result[:, 1], result[:, 0]))
     return result[order]
+
+
+def extract_obstacle_points_from_scan(
+    ranges: Sequence[float],
+    angle_min: float,
+    angle_increment: float,
+    config: PlannerConfig,
+    sensor_to_planning: Sequence[float] = (0.0, 0.0, 0.0),
+    sensor_range_min_m: float | None = None,
+    sensor_range_max_m: float | None = None,
+) -> np.ndarray:
+    """Return every valid scan endpoint in the vehicle planning ROI.
+
+    Cone classification is deliberately not involved. Wide walls, boxes,
+    people and other non-cone returns must remain hard obstacles even when
+    they fail every cone-size filter.
+    """
+
+    config.validate()
+    if len(ranges) == 0:
+        return _empty_points()
+    if not np.isfinite(angle_min) or not np.isfinite(angle_increment):
+        raise ValueError("LaserScan angles must be finite")
+    if abs(angle_increment) < 1.0e-12:
+        raise ValueError("LaserScan angle_increment must be non-zero")
+    if len(sensor_to_planning) != 3:
+        raise ValueError("sensor_to_planning must contain x, y and yaw")
+
+    tx, ty, yaw = (float(value) for value in sensor_to_planning)
+    if not all(np.isfinite(value) for value in (tx, ty, yaw)):
+        raise ValueError("sensor_to_planning must be finite")
+
+    effective_min = config.range_min_m
+    effective_max = config.range_max_m
+    if sensor_range_min_m is not None and np.isfinite(sensor_range_min_m):
+        effective_min = max(effective_min, float(sensor_range_min_m))
+    if sensor_range_max_m is not None and np.isfinite(sensor_range_max_m):
+        effective_max = min(effective_max, float(sensor_range_max_m))
+    if effective_min >= effective_max:
+        raise ValueError("configured and sensor range limits do not overlap")
+
+    values = np.asarray(ranges, dtype=float)
+    if values.ndim != 1:
+        raise ValueError("LaserScan ranges must be one-dimensional")
+    valid = np.isfinite(values) & (values >= effective_min) & (values <= effective_max)
+    if not np.any(valid):
+        return _empty_points()
+
+    indices = np.flatnonzero(valid).astype(float)
+    distances = values[valid]
+    angles = float(angle_min) + indices * float(angle_increment)
+    sensor_x = distances * np.cos(angles)
+    sensor_y = distances * np.sin(angles)
+    transform_cos = cos(yaw)
+    transform_sin = sin(yaw)
+    points = np.column_stack(
+        (
+            tx + transform_cos * sensor_x - transform_sin * sensor_y,
+            ty + transform_sin * sensor_x + transform_cos * sensor_y,
+        )
+    )
+
+    planning_angles = np.arctan2(points[:, 1], points[:, 0])
+    angle_selected = np.fromiter(
+        (_angle_is_selected(float(angle), config) for angle in planning_angles),
+        dtype=bool,
+        count=len(planning_angles),
+    )
+    in_roi = (
+        angle_selected
+        & (points[:, 0] >= config.planning_min_forward_m)
+        & (points[:, 0] <= config.planning_max_forward_m)
+        & (np.abs(points[:, 1]) <= config.planning_max_abs_lateral_m)
+    )
+    return points[in_roi]
 
 
 @dataclass
@@ -1214,6 +1322,313 @@ def _minimum_path_to_boundary_distance(
     return minimum
 
 
+def _minimum_points_to_polyline_distance(
+    points: np.ndarray, polyline: np.ndarray
+) -> float:
+    """Return the minimum point-to-polyline distance without Python point loops."""
+
+    if len(points) == 0 or len(polyline) == 0:
+        return float("inf")
+    if len(polyline) == 1:
+        return float(np.min(np.linalg.norm(points - polyline[0], axis=1)))
+    starts = polyline[:-1]
+    segments = polyline[1:] - starts
+    lengths_sq = np.sum(segments * segments, axis=1)
+    deltas = points[:, None, :] - starts[None, :, :]
+    projections = np.zeros((len(points), len(segments)), dtype=float)
+    valid = lengths_sq > 1.0e-12
+    projections[:, valid] = (
+        np.sum(deltas[:, valid, :] * segments[None, valid, :], axis=2)
+        / lengths_sq[None, valid]
+    )
+    projections = np.clip(projections, 0.0, 1.0)
+    closest = starts[None, :, :] + projections[:, :, None] * segments[None, :, :]
+    return float(np.min(np.linalg.norm(points[:, None, :] - closest, axis=2)))
+
+
+def _all_cone_fence_segments(
+    cone_centers: Iterable[Sequence[float]], config: PlannerConfig
+) -> np.ndarray:
+    """Return every short plausible fence for conservative collision checks."""
+
+    config.validate()
+    cones = np.asarray(list(cone_centers), dtype=float)
+    if cones.size == 0:
+        return np.empty((0, 2, 2), dtype=float)
+    if cones.ndim != 2 or cones.shape[1] != 2:
+        raise ValueError("cone_centers must have shape (N, 2)")
+    cones = cones[np.all(np.isfinite(cones), axis=1)]
+
+    maximum_gap = min(
+        config.boundary_fence_max_gap_m,
+        0.90 * config.track_width_min_m,
+    )
+    segments: list[tuple[np.ndarray, np.ndarray]] = []
+    for first_index in range(len(cones)):
+        for second_index in range(first_index + 1, len(cones)):
+            delta = cones[second_index] - cones[first_index]
+            distance = float(np.linalg.norm(delta))
+            if (
+                abs(float(delta[0])) >= config.min_forward_progress_m
+                and distance <= maximum_gap
+            ):
+                segments.append((cones[first_index], cones[second_index]))
+    if not segments:
+        return np.empty((0, 2, 2), dtype=float)
+    return np.asarray(segments, dtype=float)
+
+
+def trace_cone_boundary_rows(
+    cone_centers: Iterable[Sequence[float]], config: PlannerConfig
+) -> tuple[np.ndarray, np.ndarray]:
+    """Trace one forward cone row on each side of the vehicle.
+
+    One seed is selected on each side of the vehicle near the expected
+    half-track width. Each row then takes only its best forward continuation,
+    so clutter outside a cone row cannot create a fan of branches.
+    """
+
+    config.validate()
+    cones = np.asarray(list(cone_centers), dtype=float)
+    if cones.size == 0:
+        empty = _empty_points()
+        return empty, empty
+    if cones.ndim != 2 or cones.shape[1] != 2:
+        raise ValueError("cone_centers must have shape (N, 2)")
+    cones = cones[np.all(np.isfinite(cones), axis=1)]
+    if len(cones) < 2:
+        empty = _empty_points()
+        return empty, empty
+
+    # The display row may bridge one missed cone. Unlike the conservative
+    # collision fence, this tracer also requires a forward, turn-limited
+    # continuation from a side-specific seed, so the larger gap does not turn
+    # nearby cross-track clutter into a row.
+    maximum_gap = max(
+        config.boundary_fence_max_gap_m,
+        min(config.max_midpoint_step_m, 2.0 * config.expected_cone_spacing_m),
+    )
+    expected_half_width = 0.5 * config.track_width_m
+    minimum_seed_lateral = 0.5 * config.vehicle_width_m + config.safety_margin_m
+    maximum_turn_rad = np.deg2rad(config.max_turn_angle_deg)
+
+    def seed_for_side(side: float) -> int | None:
+        signed_lateral = side * cones[:, 1]
+        eligible = np.flatnonzero(
+            (cones[:, 0] >= config.planning_min_forward_m)
+            & (cones[:, 0] <= config.first_pair_max_distance_m)
+            & (signed_lateral >= minimum_seed_lateral)
+            & (signed_lateral <= config.first_pair_max_lateral_m)
+        )
+        if len(eligible) == 0:
+            return None
+        scores = cones[eligible, 0] + 0.75 * np.abs(
+            signed_lateral[eligible] - expected_half_width
+        )
+        return int(eligible[int(np.argmin(scores))])
+
+    def trace_row(seed_index: int, other_seed: int | None) -> list[np.ndarray]:
+        row = [cones[seed_index]]
+        used = {seed_index}
+        if other_seed is not None:
+            used.add(other_seed)
+        heading = np.array([1.0, 0.0], dtype=float)
+        while True:
+            current = row[-1]
+            best: tuple[float, int, np.ndarray] | None = None
+            for candidate_index, candidate in enumerate(cones):
+                if candidate_index in used:
+                    continue
+                delta = candidate - current
+                if float(delta[0]) < config.min_forward_progress_m:
+                    continue
+                distance = float(np.linalg.norm(delta))
+                if distance > maximum_gap or distance < 1.0e-9:
+                    continue
+                direction = delta / distance
+                turn = float(
+                    np.arccos(np.clip(float(np.dot(heading, direction)), -1.0, 1.0))
+                )
+                if turn > maximum_turn_rad:
+                    continue
+                score = (
+                    abs(distance - config.expected_cone_spacing_m)
+                    + 0.20 * turn
+                    + 0.10 * abs(float(delta[1]))
+                )
+                proposal = (score, candidate_index, direction)
+                if best is None or proposal[0:2] < best[0:2]:
+                    best = proposal
+            if best is None:
+                break
+            _, candidate_index, heading = best
+            used.add(candidate_index)
+            row.append(cones[candidate_index])
+        return row
+
+    left_seed = seed_for_side(1.0)
+    right_seed = seed_for_side(-1.0)
+    left_row = (
+        np.asarray(trace_row(left_seed, right_seed), dtype=float)
+        if left_seed is not None
+        else _empty_points()
+    )
+    right_row = (
+        np.asarray(trace_row(right_seed, left_seed), dtype=float)
+        if right_seed is not None
+        else _empty_points()
+    )
+    return left_row, right_row
+
+
+def connect_cone_boundary_segments(
+    cone_centers: Iterable[Sequence[float]], config: PlannerConfig
+) -> np.ndarray:
+    """Return the two traced rows as ROS ``LINE_LIST`` segments."""
+
+    rows = trace_cone_boundary_rows(cone_centers, config)
+
+    segments = [
+        (first, second)
+        for row in rows
+        for first, second in zip(row[:-1], row[1:])
+    ]
+    if not segments:
+        return np.empty((0, 2, 2), dtype=float)
+    return np.asarray(segments, dtype=float)
+
+
+def _pair_traced_boundary_rows(
+    cones: np.ndarray, config: PlannerConfig
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    tuple[float, ...],
+    tuple[float, ...],
+    tuple[float, ...],
+]:
+    """Create synchronized stations from two independently traced rows.
+
+    This is a conservative fallback for staggered cone layouts where the
+    ordinary discrete pair search cannot find enough same-station pairs. It
+    interpolates only inside the overlap of two confirmed rows and stops at
+    the first invalid or abruptly changing width.
+    """
+
+    left_row, right_row = trace_cone_boundary_rows(cones, config)
+    if len(left_row) < 2 or len(right_row) < 2:
+        empty = _empty_points()
+        return empty, empty, empty, (), (), ()
+
+    start_x = max(float(left_row[0, 0]), float(right_row[0, 0]))
+    end_x = min(float(left_row[-1, 0]), float(right_row[-1, 0]))
+    if end_x <= start_x:
+        empty = _empty_points()
+        return empty, empty, empty, (), (), ()
+
+    station_x = np.arange(
+        start_x,
+        end_x + 1.0e-9,
+        config.expected_cone_spacing_m,
+        dtype=float,
+    )
+    if len(station_x) < config.min_pairs_for_path:
+        empty = _empty_points()
+        return empty, empty, empty, (), (), ()
+
+    left_values: list[np.ndarray] = []
+    right_values: list[np.ndarray] = []
+    center_values: list[np.ndarray] = []
+    width_values: list[float] = []
+    along_values: list[float] = []
+    step_values: list[float] = []
+    previous_center = np.zeros(2, dtype=float)
+    for x_value in station_x:
+        left_point = np.array(
+            [x_value, np.interp(x_value, left_row[:, 0], left_row[:, 1])],
+            dtype=float,
+        )
+        right_point = np.array(
+            [x_value, np.interp(x_value, right_row[:, 0], right_row[:, 1])],
+            dtype=float,
+        )
+        if float(left_point[1]) <= float(right_point[1]):
+            break
+        width = float(np.linalg.norm(left_point - right_point))
+        if not config.track_width_min_m <= width <= config.track_width_max_m:
+            break
+        if (
+            width_values
+            and abs(width - width_values[-1]) > config.pair_max_width_change_m
+        ):
+            break
+        center = 0.5 * (left_point + right_point)
+        step = float(np.linalg.norm(center - previous_center))
+        if not center_values:
+            if (
+                not config.first_pair_min_distance_m
+                <= step
+                <= config.first_pair_max_distance_m
+                or abs(float(center[1])) > config.first_pair_max_lateral_m
+            ):
+                break
+            if (
+                config.require_first_pair_straddle
+                and float(left_point[1]) * float(right_point[1]) > 0.0
+            ):
+                break
+        elif (
+            step <= config.min_forward_progress_m
+            or step > config.max_midpoint_step_m
+        ):
+            break
+
+        left_values.append(left_point)
+        right_values.append(right_point)
+        center_values.append(center)
+        width_values.append(width)
+        # Both boundary polylines are evaluated at the same forward station,
+        # so their paired along-track error is zero. Confidence is reduced
+        # explicitly by boundary_row_confidence_weight below.
+        along_values.append(0.0)
+        step_values.append(step)
+        previous_center = center
+
+    if len(center_values) < config.min_pairs_for_path:
+        empty = _empty_points()
+        return empty, empty, empty, (), (), ()
+    return (
+        np.asarray(left_values, dtype=float),
+        np.asarray(right_values, dtype=float),
+        np.asarray(center_values, dtype=float),
+        tuple(width_values),
+        tuple(along_values),
+        tuple(step_values),
+    )
+
+
+def _minimum_path_to_segments_distance(
+    path: np.ndarray,
+    segments: np.ndarray,
+) -> float:
+    if len(path) == 0 or len(segments) == 0:
+        return float("inf")
+    minimum = float("inf")
+    for path_start, path_end in zip(path[:-1], path[1:]):
+        for fence_start, fence_end in segments:
+            minimum = min(
+                minimum,
+                _distance_between_segments(
+                    path_start,
+                    path_end,
+                    fence_start,
+                    fence_end,
+                ),
+            )
+    return minimum
+
+
 def _maximum_path_curvature(
     path: np.ndarray, sample_distance: float
 ) -> float:
@@ -1241,9 +1656,12 @@ def _maximum_path_curvature(
 
 
 def plan_centerline(
-    cone_centers: Iterable[Sequence[float]], config: PlannerConfig
+    cone_centers: Iterable[Sequence[float]],
+    config: PlannerConfig,
+    *,
+    obstacle_points: Iterable[Sequence[float]] | None = None,
 ) -> PlanResult:
-    """Build a confidence-gated center path through two cone boundaries."""
+    """Build a center path and veto any occupied swept vehicle corridor."""
 
     config.validate()
     cones = np.asarray(list(cone_centers), dtype=float)
@@ -1262,11 +1680,53 @@ def plan_centerline(
     order = np.lexsort((cones[:, 1], cones[:, 0]))
     cones = cones[order][: config.max_cone_candidates]
 
+    obstacles = (
+        _empty_points()
+        if obstacle_points is None
+        else np.asarray(list(obstacle_points), dtype=float)
+    )
+    if obstacles.size == 0:
+        obstacles = _empty_points()
+    elif obstacles.ndim != 2 or obstacles.shape[1] != 2:
+        raise ValueError("obstacle_points must have shape (N, 2)")
+    else:
+        obstacles = obstacles[np.all(np.isfinite(obstacles), axis=1)]
+        obstacles = obstacles[
+            (obstacles[:, 0] >= config.planning_min_forward_m)
+            & (obstacles[:, 0] <= config.planning_max_forward_m)
+            & (np.abs(obstacles[:, 1]) <= config.planning_max_abs_lateral_m)
+        ]
+
+    if (
+        config.allow_cone_contact
+        and config.cone_obstacle_exclusion_radius_m > 0.0
+        and len(obstacles)
+        and len(cones)
+    ):
+        # A cone also contributes raw LaserScan endpoints.  Remove only points
+        # local to confirmed cone centres; walls, people and other unmatched
+        # returns remain in the hard-obstacle set.
+        distances = np.linalg.norm(
+            obstacles[:, np.newaxis, :] - cones[np.newaxis, :, :], axis=2
+        )
+        obstacles = obstacles[
+            np.all(
+                distances > config.cone_obstacle_exclusion_radius_m,
+                axis=1,
+            )
+        ]
+
     left, right, centers, widths, along_errors, steps = _search_pair_chain(
         cones, config
     )
+    boundary_row_fallback_used = False
+    if len(centers) < config.min_pairs_for_path:
+        traced = _pair_traced_boundary_rows(cones, config)
+        if len(traced[2]) > len(centers):
+            left, right, centers, widths, along_errors, steps = traced
+            boundary_row_fallback_used = True
     if len(centers) == 0:
-        return empty_plan_result("NO_VALID_PAIR", len(cones))
+        return empty_plan_result("NO_VALID_PAIR", len(cones), len(obstacles))
     real_pair_count = len(centers)
     if real_pair_count < config.min_pairs_for_path:
         return PlanResult(
@@ -1277,27 +1737,33 @@ def plan_centerline(
             status="INSUFFICIENT_PAIRS",
             candidate_count=len(cones),
             real_pair_count=real_pair_count,
+            obstacle_count=len(obstacles),
+            boundary_row_fallback_used=boundary_row_fallback_used,
         )
 
-    (
-        left,
-        right,
-        centers,
-        widths,
-        along_errors,
-        steps,
-        virtual_pair_count,
-        virtual_limit_exceeded,
-    ) = _extend_with_virtual_pairs(
-        cones,
-        left,
-        right,
-        centers,
-        widths,
-        along_errors,
-        steps,
-        config,
-    )
+    if boundary_row_fallback_used:
+        virtual_pair_count = 0
+        virtual_limit_exceeded = False
+    else:
+        (
+            left,
+            right,
+            centers,
+            widths,
+            along_errors,
+            steps,
+            virtual_pair_count,
+            virtual_limit_exceeded,
+        ) = _extend_with_virtual_pairs(
+            cones,
+            left,
+            right,
+            centers,
+            widths,
+            along_errors,
+            steps,
+            config,
+        )
     if virtual_limit_exceeded:
         return PlanResult(
             left,
@@ -1308,6 +1774,8 @@ def plan_centerline(
             candidate_count=len(cones),
             real_pair_count=real_pair_count,
             virtual_pair_count=virtual_pair_count,
+            obstacle_count=len(obstacles),
+            boundary_row_fallback_used=boundary_row_fallback_used,
         )
 
     minimum_half_clearance = min(widths) * 0.5 - config.vehicle_width_m * 0.5
@@ -1322,8 +1790,9 @@ def plan_centerline(
             candidate_count=len(cones),
             real_pair_count=real_pair_count,
             virtual_pair_count=virtual_pair_count,
+            obstacle_count=len(obstacles),
+            boundary_row_fallback_used=boundary_row_fallback_used,
         )
-
     control_points = centers.copy()
     if config.include_vehicle_origin:
         control_points = np.vstack((np.zeros((1, 2), dtype=float), control_points))
@@ -1356,6 +1825,8 @@ def plan_centerline(
             candidate_count=len(cones),
             real_pair_count=real_pair_count,
             virtual_pair_count=virtual_pair_count,
+            obstacle_count=len(obstacles),
+            boundary_row_fallback_used=boundary_row_fallback_used,
         )
     # Any unused observed cone is still a hard physical obstacle. This also
     # vetoes a virtual boundary that contradicts a real narrowed row.
@@ -1367,7 +1838,10 @@ def plan_centerline(
         + config.safety_margin_m
         + config.cone_obstacle_radius_m
     )
-    if cone_clearance + 1.0e-6 < required_cone_clearance:
+    if (
+        not config.allow_cone_contact
+        and cone_clearance + 1.0e-6 < required_cone_clearance
+    ):
         return PlanResult(
             left,
             right,
@@ -1379,6 +1853,58 @@ def plan_centerline(
             candidate_count=len(cones),
             real_pair_count=real_pair_count,
             virtual_pair_count=virtual_pair_count,
+            obstacle_count=len(obstacles),
+            boundary_row_fallback_used=boundary_row_fallback_used,
+        )
+    # Confirmed cones define a virtual fence between plausible same-row
+    # neighbours. This prevents a route from crossing a cone row through the
+    # empty angular gap and locking onto cone-like clutter beyond that row.
+    cone_fences = _all_cone_fence_segments(cones, config)
+    fence_clearance = _minimum_path_to_segments_distance(path, cone_fences)
+    if (
+        not config.allow_cone_contact
+        and fence_clearance + 1.0e-6 < required_cone_clearance
+    ):
+        return PlanResult(
+            left,
+            right,
+            centers,
+            _empty_points(),
+            status="CONE_BOUNDARY_CROSSING",
+            path_length_m=path_length,
+            smoothing_applied=smoothing_applied,
+            candidate_count=len(cones),
+            real_pair_count=real_pair_count,
+            virtual_pair_count=virtual_pair_count,
+            obstacle_count=len(obstacles),
+            cone_fence_segment_count=len(cone_fences),
+            minimum_cone_fence_clearance_m=fence_clearance,
+            boundary_row_fallback_used=boundary_row_fallback_used,
+        )
+    # Every valid scan endpoint is a hard obstacle, regardless of whether it
+    # looks like a cone. The distance is measured to the observed surface, so
+    # only the vehicle half-width and configured safety margin are added.
+    obstacle_clearance = _minimum_points_to_polyline_distance(obstacles, path)
+    required_obstacle_clearance = (
+        config.vehicle_width_m * 0.5 + config.safety_margin_m
+    )
+    if obstacle_clearance + 1.0e-6 < required_obstacle_clearance:
+        return PlanResult(
+            left,
+            right,
+            centers,
+            _empty_points(),
+            status="OBSTACLE_ON_PATH",
+            path_length_m=path_length,
+            smoothing_applied=smoothing_applied,
+            candidate_count=len(cones),
+            real_pair_count=real_pair_count,
+            virtual_pair_count=virtual_pair_count,
+            obstacle_count=len(obstacles),
+            minimum_obstacle_clearance_m=obstacle_clearance,
+            cone_fence_segment_count=len(cone_fences),
+            minimum_cone_fence_clearance_m=fence_clearance,
+            boundary_row_fallback_used=boundary_row_fallback_used,
         )
     if path_length < config.min_path_length_m:
         return PlanResult(
@@ -1392,6 +1918,11 @@ def plan_centerline(
             candidate_count=len(cones),
             real_pair_count=real_pair_count,
             virtual_pair_count=virtual_pair_count,
+            obstacle_count=len(obstacles),
+            minimum_obstacle_clearance_m=obstacle_clearance,
+            cone_fence_segment_count=len(cone_fences),
+            minimum_cone_fence_clearance_m=fence_clearance,
+            boundary_row_fallback_used=boundary_row_fallback_used,
         )
 
     max_curvature = _maximum_path_curvature(path, config.curvature_sample_distance_m)
@@ -1411,6 +1942,11 @@ def plan_centerline(
             candidate_count=len(cones),
             real_pair_count=real_pair_count,
             virtual_pair_count=virtual_pair_count,
+            obstacle_count=len(obstacles),
+            minimum_obstacle_clearance_m=obstacle_clearance,
+            cone_fence_segment_count=len(cone_fences),
+            minimum_cone_fence_clearance_m=fence_clearance,
+            boundary_row_fallback_used=boundary_row_fallback_used,
         )
 
     # Synthetic pairs must never make width/alignment quality look better than
@@ -1445,7 +1981,11 @@ def plan_centerline(
             )
         )
     else:
-        observation_density = 0.0
+        # With an explicitly configured one-pair start there is no station
+        # interval from which to estimate density.  Treat that unavailable
+        # metric as neutral; width, alignment, path clearance and curvature
+        # checks still gate the path.
+        observation_density = 1.0
     length_quality = min(1.0, path_length / config.min_path_length_m)
     confidence = float(
         np.clip(
@@ -1454,7 +1994,12 @@ def plan_centerline(
             * alignment_quality
             * observation_density
             * length_quality
-            * config.virtual_cone_confidence_weight**virtual_pair_count,
+            * config.virtual_cone_confidence_weight**virtual_pair_count
+            * (
+                config.boundary_row_confidence_weight
+                if boundary_row_fallback_used
+                else 1.0
+            ),
             0.0,
             1.0,
         )
@@ -1476,4 +2021,9 @@ def plan_centerline(
         candidate_count=len(cones),
         real_pair_count=real_pair_count,
         virtual_pair_count=virtual_pair_count,
+        obstacle_count=len(obstacles),
+        minimum_obstacle_clearance_m=obstacle_clearance,
+        cone_fence_segment_count=len(cone_fences),
+        minimum_cone_fence_clearance_m=fence_clearance,
+        boundary_row_fallback_used=boundary_row_fallback_used,
     )

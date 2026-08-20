@@ -10,7 +10,12 @@ import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float32, Header, Int32MultiArray, String
@@ -23,6 +28,16 @@ from kmu_track.drive_mode_core import (
     ConsecutiveThreshold,
     largest_bbox_area_ratio,
 )
+
+
+def latest_image_qos() -> QoSProfile:
+    """Keep only the newest camera frame so inference cannot build a queue."""
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        durability=DurabilityPolicy.VOLATILE,
+    )
 
 
 def image_message_to_numpy(message: Image) -> np.ndarray:
@@ -413,7 +428,7 @@ class YoloLaneDetectorNode(Node):
                 Image,
                 str(self.get_parameter('image_topic').value),
                 self._on_image,
-                qos_profile_sensor_data,
+                latest_image_qos(),
             )
         self.camera_active_pub.publish(Bool(data=True))
         self.get_logger().info('Camera perception subscription activated')

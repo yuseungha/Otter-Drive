@@ -12,11 +12,17 @@ Usage:
   ./scripts/run_competition.sh --check
   ./scripts/run_competition.sh --dry-run
   ./scripts/run_competition.sh --cone-dry-run
+  ./scripts/run_competition.sh --sensor-mode-dry-run
+  ./scripts/run_competition.sh --sensor-cone-live
   ./scripts/run_competition.sh --video /absolute/path/to/video.mp4
   ./scripts/run_competition.sh --live
 
 --dry-run is the default and never starts the serial bridge.
 --cone-dry-run starts RPLIDAR perception only and never starts an actuator bridge.
+--sensor-mode-dry-run starts camera, RPLIDAR, FSM, both controllers, and the
+command mux in preview-only mode; it never starts an actuator bridge.
+--sensor-cone-live starts the FSM in CONE_INIT and connects the confirmed
+Arduino bridge with the same limits used by lane driving.
 --live requires KMU_HARDWARE_CONFIRMED=true and a real serial device.
 EOF
 }
@@ -26,6 +32,8 @@ while (($#)); do
     --check) mode=check ;;
     --dry-run) mode=dry-run ;;
     --cone-dry-run) mode=cone-dry-run ;;
+    --sensor-mode-dry-run) mode=sensor-mode-dry-run ;;
+    --sensor-cone-live) mode=sensor-cone-live ;;
     --live) mode=live ;;
     --video)
       [[ $# -ge 2 ]] || { echo 'ERROR: --video requires a path.' >&2; exit 2; }
@@ -57,6 +65,7 @@ serial=${KMU_SERIAL_DEVICE:-/dev/serial/by-id/REPLACE_WITH_ARDUINO_DEVICE}
 domain_id=${KMU_ROS_DOMAIN_ID:-86}
 display=${KMU_DISPLAY:-false}
 steering_only=${KMU_STEERING_ONLY:-true}
+initial_mode=${KMU_INITIAL_MODE:-LANE_FOLLOW}
 confirmed=${KMU_HARDWARE_CONFIRMED:-false}
 container_name=kmu-autodriving-runtime
 
@@ -69,7 +78,7 @@ docker image inspect "${image}" >/dev/null 2>&1 || fail "container image is miss
 actual_sha=$(sha256sum "${model}" | awk '{print $1}')
 [[ ${actual_sha} == "${model_sha}" ]] || fail "model SHA-256 mismatch: ${actual_sha}"
 
-if [[ ${mode} == dry-run || ${mode} == live ]]; then
+if [[ ${mode} == dry-run || ${mode} == live || ${mode} == sensor-mode-dry-run || ${mode} == sensor-cone-live ]]; then
   [[ -e ${camera_requested} ]] || fail "camera device is missing: ${camera_requested}"
   camera=$(readlink -f -- "${camera_requested}")
   [[ ${camera} == /dev/video* ]] || fail "camera did not resolve to /dev/video*: ${camera}"
@@ -77,16 +86,16 @@ fi
 if [[ ${mode} == video ]]; then
   [[ -r ${video_path} ]] || fail "video is missing or unreadable: ${video_path}"
 fi
-if [[ ${mode} == cone-dry-run ]]; then
+if [[ ${mode} == cone-dry-run || ${mode} == sensor-mode-dry-run || ${mode} == sensor-cone-live ]]; then
   [[ -e ${lidar_requested} ]] || fail "LiDAR device is missing: ${lidar_requested}"
   lidar=$(readlink -f -- "${lidar_requested}")
   [[ ${lidar} == /dev/ttyUSB* || ${lidar} == /dev/ttyACM* ]] || \
     fail "LiDAR did not resolve to /dev/ttyUSB* or /dev/ttyACM*: ${lidar}"
 fi
-if [[ ${mode} == live ]]; then
+if [[ ${mode} == live || ${mode} == sensor-cone-live ]]; then
   [[ ${confirmed} == true ]] || fail 'set KMU_HARDWARE_CONFIRMED=true only after the hardware runbook'
   [[ -e ${serial} ]] || fail "serial device is missing: ${serial}"
-  if fuser "${serial}" >/dev/null 2>&1; then
+  if [[ ${mode} == live ]] && fuser "${serial}" >/dev/null 2>&1; then
     fail "serial device is already in use: ${serial}"
   fi
 fi
@@ -140,6 +149,31 @@ if [[ ${mode} == cone-dry-run ]]; then
     planning_frame:=base_link
     viewer_enabled:=false
     viewer_record_path:=/tmp/kmu-cone-viewer-latest.png)
+elif [[ ${mode} == sensor-mode-dry-run || ${mode} == sensor-cone-live ]]; then
+  launch_command=(ros2 launch kmu_track sensor_mode_drive.launch.py
+    camera_device:="${camera}"
+    model_path:="${model}"
+    lidar_port:="${lidar}"
+    camera_config:="${project_root}/configs/camera.yaml"
+    perception_config:="${project_root}/configs/perception.yaml"
+    lane_control_config:="${project_root}/configs/lane_control.yaml"
+    sensor_mode_config:="${project_root}/src/jetson/kmu_track/config/sensor_mode.yaml"
+    cone_planner_config:="${project_root}/configs/cone/cone_planner.yaml"
+    cone_controller_config:="${project_root}/src/jetson/lidar_cone_planner/config/cone_controller.yaml"
+    lidar_system_config:="${project_root}/configs/cone/cone_lidar_cv.yaml"
+    adapter_config:="${project_root}/src/jetson/rc_car_teleop/config/autonomous_drive.yaml"
+    require_odometry:=false throttle_max:=550
+    steering_min:=-900 steering_max:=900)
+  if [[ ${mode} == sensor-cone-live ]]; then
+    launch_command+=(dry_run:=false hardware_confirmed:=true
+      steering_only:="${steering_only}" initial_mode:=CONE_INIT
+      serial_bridge:=false arduino_port:="${serial}"
+      cone_geometry_confirmed:=true lane_stack_enabled:=false)
+  else
+    launch_command+=(dry_run:=true hardware_confirmed:=false
+      steering_only:=true initial_mode:="${initial_mode}"
+      serial_bridge:=false cone_geometry_confirmed:=false)
+  fi
 elif [[ ${mode} == video ]]; then
   launch_command=(ros2 launch kmu_track lane_drive_video.launch.py
     perception_config:="${project_root}/configs/perception.yaml"

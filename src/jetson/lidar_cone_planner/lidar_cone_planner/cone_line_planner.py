@@ -31,8 +31,10 @@ from .planner_core import (
     ConeTrackFilter,
     PlanResult,
     PlannerConfig,
+    connect_cone_boundary_segments,
     detect_cones_from_scan,
     empty_plan_result,
+    extract_obstacle_points_from_scan,
     plan_centerline,
 )
 from .preview_core import PreviewConfig, PreviewResult, compute_path_preview, invalid_preview
@@ -69,6 +71,8 @@ class ConeLinePlanner(Node):
         self.declare_parameter("lookahead_time_s", 0.75, read_only)
         self.declare_parameter("validation_speed_mps", 0.0, read_only)
         self.declare_parameter("managed_subscription", False, read_only)
+        self.declare_parameter(
+            "initial_mission_mode", "LANE_FOLLOW", read_only)
         self.declare_parameter("cone_end_x_min", 0.3)
         self.declare_parameter("cone_end_x_max", 0.7)
         self.declare_parameter("cone_end_left_y_min", 0.15)
@@ -190,8 +194,19 @@ class ConeLinePlanner(Node):
         self.scan_subscription = None
         self._managed_subscription = bool(
             self.get_parameter("managed_subscription").value)
-        self._mission_mode = "LANE_FOLLOW"
-        self._camera_subscription_active = True
+        initial_mission_mode = str(
+            self.get_parameter("initial_mission_mode").value
+        ).strip().upper()
+        if initial_mission_mode not in {
+            "LANE_FOLLOW", "CONE_INIT", "CONE_SLALOM",
+            "LANE_REACQUIRE", "SAFE_STOP",
+        }:
+            raise ValueError("invalid initial_mission_mode")
+        self._mission_mode = initial_mission_mode
+        # No camera consumer exists during a direct CONE_INIT startup.  A real
+        # camera subscription publishes its latched activity state and will
+        # still close this interlock before a later mode handoff.
+        self._camera_subscription_active = False
         self._started_monotonic = time.monotonic()
         self._last_scan_monotonic: float | None = None
         self._last_scan_stamp_ns: int | None = None
@@ -213,6 +228,7 @@ class ConeLinePlanner(Node):
         )
         if self._managed_subscription:
             self.subscription_active_publisher.publish(Bool(data=False))
+            self._reconcile_scan_subscription()
         else:
             self._activate_scan_subscription()
 
@@ -460,8 +476,24 @@ class ConeLinePlanner(Node):
                 sensor_range_min_m=scan.range_min,
                 sensor_range_max_m=scan.range_max,
             )
+            obstacle_points = extract_obstacle_points_from_scan(
+                scan.ranges,
+                scan.angle_min,
+                scan.angle_increment,
+                self.config,
+                sensor_to_planning=transform,
+                sensor_range_min_m=scan.range_min,
+                sensor_range_max_m=scan.range_max,
+            )
             confirmed_cones = self.track_filter.update(raw_candidates)
-            result = plan_centerline(confirmed_cones, self.config)
+            boundary_segments = connect_cone_boundary_segments(
+                confirmed_cones, self.config
+            )
+            result = plan_centerline(
+                confirmed_cones,
+                self.config,
+                obstacle_points=obstacle_points,
+            )
             if (
                 self._mission_mode == "CONE_SLALOM"
                 and self.end_detector.update(
@@ -511,7 +543,13 @@ class ConeLinePlanner(Node):
         )
         self.cones_publisher.publish(self._make_pose_array(header, confirmed_cones))
         self.markers_publisher.publish(
-            self._make_markers(header, raw_candidates, confirmed_cones, result)
+            self._make_markers(
+                header,
+                raw_candidates,
+                confirmed_cones,
+                result,
+                boundary_segments,
+            )
         )
         # An empty Path is an explicit cancellation of the preceding valid path.
         path_points = result.path if result.valid else np.empty((0, 2), dtype=float)
@@ -531,6 +569,18 @@ class ConeLinePlanner(Node):
                 "matched_pairs": result.matched_pair_count,
                 "real_pairs": result.real_pair_count,
                 "virtual_pairs": result.virtual_pair_count,
+                "obstacle_points": result.obstacle_count,
+                "minimum_obstacle_clearance_m": (
+                    result.minimum_obstacle_clearance_m
+                ),
+                "observed_boundary_segments": len(boundary_segments),
+                "cone_fence_segments": result.cone_fence_segment_count,
+                "boundary_row_fallback_used": (
+                    result.boundary_row_fallback_used
+                ),
+                "minimum_cone_fence_clearance_m": (
+                    result.minimum_cone_fence_clearance_m
+                ),
                 "path_points": len(result.path),
                 "path_length_m": result.path_length_m,
                 "confidence": result.confidence,
@@ -759,6 +809,7 @@ class ConeLinePlanner(Node):
         raw_cones: np.ndarray,
         confirmed_cones: np.ndarray,
         result: PlanResult,
+        boundary_segments: np.ndarray | None = None,
     ) -> MarkerArray:
         markers = MarkerArray()
         clear = Marker()
@@ -781,6 +832,17 @@ class ConeLinePlanner(Node):
         candidates.color = self._color(1.0, 0.45, 0.0)
         candidates.points = self._points(confirmed_cones)
         markers.markers.append(candidates)
+
+        observed_boundaries = self._base_marker(
+            header, 10, Marker.LINE_LIST, "observed_boundaries"
+        )
+        observed_boundaries.scale.x = 0.025
+        observed_boundaries.color = self._color(0.0, 0.85, 0.95, 0.9)
+        if boundary_segments is not None:
+            observed_boundaries.points = self._points(
+                boundary_segments.reshape((-1, 2))
+            )
+        markers.markers.append(observed_boundaries)
 
         left = self._base_marker(header, 2, Marker.LINE_STRIP, "matched_left")
         left.scale.x = 0.035

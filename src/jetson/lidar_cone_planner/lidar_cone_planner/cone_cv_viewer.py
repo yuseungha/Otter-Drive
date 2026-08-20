@@ -289,6 +289,10 @@ class ConeCvViewer(Node):
 
     def _draw_pair_links(self, image, points) -> None:
         """Show the cross-course pairs whose midpoints define the route."""
+        self._draw_segment_links(image, points, (150, 150, 150), thickness=1)
+
+    def _draw_segment_links(self, image, points, color, *, thickness=2) -> None:
+        """Draw a LINE_LIST-style point array without joining separate segments."""
         for index in range(0, len(points) - 1, 2):
             first, second = points[index], points[index + 1]
             if self._visible(first) and self._visible(second):
@@ -296,8 +300,8 @@ class ConeCvViewer(Node):
                     image,
                     self._pixel(first),
                     self._pixel(second),
-                    (150, 150, 150),
-                    1,
+                    color,
+                    thickness,
                     cv2.LINE_AA,
                 )
 
@@ -334,10 +338,16 @@ class ConeCvViewer(Node):
 
         left = self.marker_points.get("matched_left", np.empty((0, 2)))
         right = self.marker_points.get("matched_right", np.empty((0, 2)))
+        observed_boundaries = self.marker_points.get(
+            "observed_boundaries", np.empty((0, 2))
+        )
         pair_links = self.marker_points.get("matched_pairs", np.empty((0, 2)))
         raw_center = self.marker_points.get("raw_center", np.empty((0, 2)))
         virtual_left = self.marker_points.get("virtual_left", np.empty((0, 2)))
         virtual_right = self.marker_points.get("virtual_right", np.empty((0, 2)))
+        self._draw_segment_links(
+            image, observed_boundaries, (0, 215, 240), thickness=3
+        )
         self._draw_pair_links(image, pair_links)
         self._draw_line(image, left, (255, 100, 20), 2)
         self._draw_line(image, right, (20, 30, 255), 2)

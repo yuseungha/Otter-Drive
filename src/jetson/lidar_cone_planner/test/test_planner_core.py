@@ -6,7 +6,9 @@ import numpy as np
 from lidar_cone_planner.planner_core import (
     ConeTrackFilter,
     PlannerConfig,
+    connect_cone_boundary_segments,
     detect_cones_from_scan,
+    extract_obstacle_points_from_scan,
     left_normal_from_tangent,
     plan_centerline,
     station_center_from_boundaries,
@@ -40,6 +42,10 @@ class TestPlannerConfig(unittest.TestCase):
             PlannerConfig(curvature_sample_distance_m=0.0)
         with self.assertRaises(ValueError):
             PlannerConfig(cluster_max_skip_beams=1.5)
+        with self.assertRaises(ValueError):
+            PlannerConfig(boundary_fence_max_gap_m=0.0)
+        with self.assertRaises(ValueError):
+            PlannerConfig(boundary_row_confidence_weight=0.0)
 
 
 class TestLocalStationGeometry(unittest.TestCase):
@@ -103,6 +109,22 @@ class TestPlanCenterline(unittest.TestCase):
         np.testing.assert_allclose(result.raw_centerline[:, 1], 0.0, atol=1.0e-7)
         self.assertTrue(np.all(np.diff(result.raw_centerline[:, 0]) > 0.0))
         self.assertGreaterEqual(result.path_length_m, self.config.min_path_length_m)
+
+    def test_explicit_single_pair_policy_builds_a_path(self) -> None:
+        config = PlannerConfig(
+            min_pairs_for_path=1,
+            confidence_full_pairs=1,
+            smoothing_iterations=0,
+            min_path_length_m=0.60,
+            min_plan_confidence=0.40,
+        )
+        cones = np.array([[1.0, 0.30], [1.0, -0.30]])
+
+        result = plan_centerline(cones, config)
+
+        self.assertTrue(result.valid, result.status)
+        self.assertEqual(result.real_pair_count, 1)
+        self.assertEqual(len(result.raw_centerline), 1)
 
     def test_cone_input_order_does_not_change_selected_path(self) -> None:
         x = 0.35 + np.arange(7) * 0.297
@@ -392,6 +414,165 @@ class TestPlanCenterline(unittest.TestCase):
         self.assertFalse(result.valid)
         self.assertEqual(result.status, "CONE_OBSTACLE_ON_PATH")
 
+    def test_cone_contact_mode_ignores_cones_but_keeps_other_obstacles(self) -> None:
+        centers = np.column_stack((0.35 + np.arange(6) * 0.30, np.zeros(6)))
+        boundary_cones = make_boundaries(centers, 0.60)
+        cones = np.vstack((boundary_cones, [[1.10, 0.0]]))
+        config = PlannerConfig(
+            allow_cone_contact=True,
+            cone_obstacle_exclusion_radius_m=0.18,
+            min_path_length_m=0.5,
+            min_plan_confidence=0.0,
+            max_path_curvature_1pm=0.0,
+        )
+
+        cone_only = plan_centerline(
+            cones,
+            config,
+            obstacle_points=[[1.10, 0.0]],
+        )
+        self.assertTrue(cone_only.valid, cone_only.status)
+
+        with_other_obstacle = plan_centerline(
+            cones,
+            config,
+            obstacle_points=[[1.10, 0.0], [0.80, 0.0]],
+        )
+        self.assertFalse(with_other_obstacle.valid)
+        self.assertEqual(with_other_obstacle.status, "OBSTACLE_ON_PATH")
+
+    def test_non_cone_obstacle_in_vehicle_corridor_vetoes_path(self) -> None:
+        centers = np.column_stack((0.35 + np.arange(6) * 0.30, np.zeros(6)))
+        cones = make_boundaries(centers, 0.60)
+        result = plan_centerline(
+            cones,
+            PlannerConfig(
+                min_path_length_m=0.5,
+                min_plan_confidence=0.0,
+                max_path_curvature_1pm=0.0,
+            ),
+            obstacle_points=[[1.10, 0.0]],
+        )
+
+        self.assertFalse(result.valid)
+        self.assertEqual(result.status, "OBSTACLE_ON_PATH")
+        self.assertEqual(result.obstacle_count, 1)
+        self.assertAlmostEqual(result.minimum_obstacle_clearance_m, 0.0)
+
+    def test_non_cone_obstacle_outside_vehicle_corridor_is_allowed(self) -> None:
+        centers = np.column_stack((0.35 + np.arange(6) * 0.30, np.zeros(6)))
+        cones = make_boundaries(centers, 0.60)
+        result = plan_centerline(
+            cones,
+            PlannerConfig(
+                vehicle_width_m=0.10,
+                safety_margin_m=0.02,
+                min_path_length_m=0.5,
+                min_plan_confidence=0.0,
+                max_path_curvature_1pm=0.0,
+            ),
+            obstacle_points=[[1.10, 0.20]],
+        )
+
+        self.assertTrue(result.valid, result.status)
+        self.assertGreater(result.minimum_obstacle_clearance_m, 0.19)
+
+    def test_path_cannot_cross_unused_confirmed_cone_fence(self) -> None:
+        centers = np.column_stack((0.35 + np.arange(6) * 0.30, np.zeros(6)))
+        cones = make_boundaries(centers, 0.60)
+        # Individually these two points clear the narrow test vehicle, but the
+        # plausible same-row segment between them cuts across the center path.
+        crossing_row = np.array([[0.95, -0.10], [1.20, 0.10]])
+        result = plan_centerline(
+            np.vstack((cones, crossing_row)),
+            PlannerConfig(
+                track_width_m=0.60,
+                track_width_min_m=0.55,
+                track_width_max_m=0.65,
+                vehicle_width_m=0.10,
+                safety_margin_m=0.02,
+                min_path_length_m=0.5,
+                min_plan_confidence=0.0,
+                max_path_curvature_1pm=0.0,
+                boundary_fence_max_gap_m=0.38,
+            ),
+        )
+
+        self.assertFalse(result.valid)
+        self.assertEqual(result.status, "CONE_BOUNDARY_CROSSING")
+        self.assertGreater(result.cone_fence_segment_count, 0)
+        self.assertAlmostEqual(result.minimum_cone_fence_clearance_m, 0.0)
+
+    def test_observed_rows_connect_without_cross_track_segments(self) -> None:
+        centers = np.column_stack((0.35 + np.arange(6) * 0.30, np.zeros(6)))
+        cones = make_boundaries(centers, 0.60)
+        clutter_beyond_right_row = np.array(
+            [[0.40, -0.72], [0.52, -0.84], [0.92, -0.90]]
+        )
+
+        segments = connect_cone_boundary_segments(
+            np.vstack((cones, clutter_beyond_right_row)),
+            PlannerConfig(
+                track_width_min_m=0.55,
+                boundary_fence_max_gap_m=0.38,
+            ),
+        )
+
+        self.assertEqual(segments.shape, (10, 2, 2))
+        # Each segment remains on one side; no line may bridge the lane width.
+        self.assertTrue(
+            np.all(segments[:, 0, 1] * segments[:, 1, 1] > 0.0)
+        )
+        self.assertTrue(np.all(np.abs(segments[:, :, 1]) < 0.70))
+
+    def test_staggered_two_rows_generate_center_path_without_using_clutter(self) -> None:
+        # The right row misses a near station and clutter sits farther outside.
+        # Direct same-station pairing is insufficient, but the two confirmed
+        # row polylines still define a bounded center corridor.
+        cones = np.array(
+            [
+                [0.148, -0.332],
+                [0.206, -0.845],
+                [0.247, 0.404],
+                [0.445, 1.020],
+                [0.600, 1.027],
+                [0.709, 0.406],
+                [0.893, -0.427],
+                [0.894, 1.137],
+                [1.104, 0.321],
+                [1.287, -0.587],
+                [1.410, 0.048],
+                [1.705, -0.657],
+                [1.823, -0.033],
+                [2.067, 0.324],
+            ]
+        )
+        result = plan_centerline(
+            cones,
+            PlannerConfig(
+                track_width_m=0.80,
+                track_width_min_m=0.70,
+                track_width_max_m=0.95,
+                expected_cone_spacing_m=0.40,
+                boundary_fence_max_gap_m=0.58,
+                vehicle_width_m=0.26,
+                safety_margin_m=0.02,
+                require_first_pair_straddle=True,
+                min_path_length_m=0.80,
+                max_path_curvature_1pm=0.0,
+            ),
+        )
+
+        self.assertTrue(result.valid, result.status)
+        self.assertTrue(result.boundary_row_fallback_used)
+        self.assertEqual(result.matched_pair_count, 3)
+        self.assertTrue(
+            np.all(
+                (result.raw_centerline[:, 1] < result.left_boundary[:, 1])
+                & (result.raw_centerline[:, 1] > result.right_boundary[:, 1])
+            )
+        )
+
     def test_observed_narrow_row_vetoes_virtual_boundary(self) -> None:
         x = 0.35 + np.arange(5) * 0.30
         complete = np.vstack(
@@ -457,6 +638,21 @@ class TestScanClustering(unittest.TestCase):
         self.assertTrue(np.all(cones[:, 0] > 0.8))
         self.assertTrue(np.any(cones[:, 1] < 0.0))
         self.assertTrue(np.any(cones[:, 1] > 0.0))
+
+    def test_wide_non_cone_cluster_remains_an_obstacle(self) -> None:
+        angle_increment = pi / 360.0
+        ranges = np.full(721, np.inf, dtype=float)
+        ranges[335:386] = 1.0
+        config = PlannerConfig()
+
+        cones = detect_cones_from_scan(ranges, -pi, angle_increment, config)
+        obstacles = extract_obstacle_points_from_scan(
+            ranges, -pi, angle_increment, config
+        )
+
+        self.assertEqual(len(cones), 0)
+        self.assertEqual(len(obstacles), 51)
+        self.assertTrue(np.all(obstacles[:, 0] > 0.95))
 
     def test_one_invalid_beam_inside_cone_is_bridged(self) -> None:
         angle_increment = pi / 360.0

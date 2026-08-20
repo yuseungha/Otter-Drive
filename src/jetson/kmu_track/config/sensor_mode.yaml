@@ -3,14 +3,20 @@ sensor_mode_manager:
     lane_confirm_window: 5
     lane_confirm_required: 4
     lane_reacquire_timeout_sec: 3.0
-    lidar_path_timeout_sec: 1.5
+    lidar_path_timeout_sec: 10.0
     perception_result_max_age_sec: 0.35
     sensor_timeout_sec: 0.60
-    path_timeout_sec: 0.60
-    subscription_switch_timeout_sec: 1.0
-    # Includes YOLO model load/warmup. Reduce only after measuring startup.
-    startup_grace_sec: 8.0
+    path_timeout_sec: 3.0
+    subscription_switch_timeout_sec: 3.0
+    # The Jetson cold-start measurement was about 7 s. Keep enough margin for
+    # camera enumeration and the first inference heartbeat under load.
+    startup_grace_sec: 15.0
     watchdog_rate_hz: 20.0
+    # Keep camera-triggered entry disabled until orange-area thresholds are
+    # measured on the real course. Use set_cone_mode for controlled tests.
+    automatic_cone_transition_enabled: false
+    # The one-gate LiDAR run ends only by operator request or a safety fault.
+    automatic_cone_exit_enabled: false
 
 mode_command_mux:
   ros__parameters:

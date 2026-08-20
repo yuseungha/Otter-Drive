@@ -12,6 +12,22 @@ from kmu_track.drive_mode_core import (
 )
 
 
+def test_fail_closed_cone_init_can_be_selected_at_startup():
+    assert DriveModeMachine(DriveMode.CONE_INIT).mode == DriveMode.CONE_INIT
+
+
+def test_active_or_recovery_modes_cannot_be_selected_at_startup():
+    import pytest
+
+    for mode in (
+        DriveMode.CONE_SLALOM,
+        DriveMode.LANE_REACQUIRE,
+        DriveMode.SAFE_STOP,
+    ):
+        with pytest.raises(ValueError):
+            DriveModeMachine(mode)
+
+
 def test_three_camera_frames_enter_cone_init():
     ratio = largest_bbox_area_ratio([(0, 0, 80, 80)], 640, 480)
     assert ratio > 0.015
@@ -21,6 +37,17 @@ def test_three_camera_frames_enter_cone_init():
     assert not detector.update(True)
     assert detector.update(True)
     assert fsm.apply(DriveEvent.CONE_CONFIRMED) == DriveMode.CONE_INIT
+
+
+def test_cone_init_can_be_cancelled_through_the_fsm():
+    fsm = DriveModeMachine()
+    assert fsm.apply(DriveEvent.CONE_CONFIRMED) == DriveMode.CONE_INIT
+    assert fsm.apply(DriveEvent.CONE_CANCELLED) == DriveMode.LANE_REACQUIRE
+
+
+def test_cone_cancel_is_ignored_outside_cone_init():
+    fsm = DriveModeMachine()
+    assert fsm.apply(DriveEvent.CONE_CANCELLED) == DriveMode.LANE_FOLLOW
 
 
 def test_camera_must_report_off_before_lidar_can_start():
