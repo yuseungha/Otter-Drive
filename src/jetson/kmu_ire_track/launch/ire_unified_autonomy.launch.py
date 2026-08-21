@@ -2,7 +2,7 @@
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, Shutdown
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -27,6 +27,7 @@ def generate_launch_description() -> LaunchDescription:
     serial_bridge = LaunchConfiguration('serial_bridge')
     dry_run = LaunchConfiguration('dry_run')
     hardware_confirmed = LaunchConfiguration('hardware_confirmed')
+    competition_no_stop = LaunchConfiguration('competition_no_stop')
     viewer = LaunchConfiguration('viewer')
     system_python = {'PYTHONNOUSERSITE': '1'}
 
@@ -55,6 +56,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('serial_bridge', default_value='false'),
         DeclareLaunchArgument('dry_run', default_value='true'),
         DeclareLaunchArgument('hardware_confirmed', default_value='false'),
+        DeclareLaunchArgument('competition_no_stop', default_value='false'),
         DeclareLaunchArgument('viewer', default_value='false'),
         DeclareLaunchArgument('throttle_max', default_value='700'),
         DeclareLaunchArgument('steering_min', default_value='-650'),
@@ -98,7 +100,10 @@ def generate_launch_description() -> LaunchDescription:
                 },
             ],
             additional_env=system_python,
-            on_exit=Shutdown(reason='IRE lane detector stopped'),
+            on_exit=Shutdown(
+                reason='IRE lane detector stopped',
+                condition=UnlessCondition(competition_no_stop),
+            ),
         ),
         Node(
             package='kmu_track',
@@ -119,7 +124,10 @@ def generate_launch_description() -> LaunchDescription:
                     'active_states': ['LANE'],
                 },
             ],
-            on_exit=Shutdown(reason='IRE lane controller stopped'),
+            on_exit=Shutdown(
+                reason='IRE lane controller stopped',
+                condition=UnlessCondition(competition_no_stop),
+            ),
         ),
 
         Node(
@@ -163,7 +171,9 @@ def generate_launch_description() -> LaunchDescription:
                 'planning_frame': planning_frame,
                 'output_topic': output_topic,
                 'auto_arm_drive': ParameterValue(
-                    serial_bridge, value_type=bool)}]),
+                    serial_bridge, value_type=bool),
+                'competition_no_stop_enabled': ParameterValue(
+                    competition_no_stop, value_type=bool)}]),
         Node(
             package='kmu_track', executable='actuation_monitor',
             name='actuation_monitor', output='screen',
@@ -186,5 +196,8 @@ def generate_launch_description() -> LaunchDescription:
                     LaunchConfiguration('steering_min'), value_type=int),
                 'steering_max': ParameterValue(
                     LaunchConfiguration('steering_max'), value_type=int),
+                'competition_no_stop_enabled': ParameterValue(
+                    competition_no_stop, value_type=bool),
+                'competition_minimum_throttle_counts': 320,
             }]),
     ])

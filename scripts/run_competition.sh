@@ -16,6 +16,7 @@ Usage:
   ./scripts/run_competition.sh --sensor-cone-live
   ./scripts/run_competition.sh --unified-dry-run
   ./scripts/run_competition.sh --unified-live
+  ./scripts/run_competition.sh --unified-no-stop-live
   ./scripts/run_competition.sh --video /absolute/path/to/video.mp4
   ./scripts/run_competition.sh --live
 
@@ -28,6 +29,8 @@ Arduino bridge with the same limits used by lane driving.
 --unified-dry-run runs the IRE lane controller with obstacle/cone planning and
 publishes only /rc_car/drive_cmd_preview.
 --unified-live connects the IRE-based integrated stack to the Arduino bridge.
+--unified-no-stop-live explicitly enables the unsafe competition-only profile:
+after normal departure, transient input timeouts retain the last forward drive.
 --live requires KMU_HARDWARE_CONFIRMED=true and a real serial device.
 EOF
 }
@@ -41,6 +44,7 @@ while (($#)); do
     --sensor-cone-live) mode=sensor-cone-live ;;
     --unified-dry-run) mode=unified-dry-run ;;
     --unified-live) mode=unified-live ;;
+    --unified-no-stop-live) mode=unified-no-stop-live ;;
     --live) mode=live ;;
     --video)
       [[ $# -ge 2 ]] || { echo 'ERROR: --video requires a path.' >&2; exit 2; }
@@ -66,7 +70,7 @@ model=${KMU_MODEL_PATH:-${project_root}/models/road_best.pt}
 model_sha=${KMU_MODEL_SHA256:-b54bb33713d753ac7860ebad33c2f166ce9230f63fdf5c30a0528bac45ea779c}
 seg_model=${KMU_SEG_MODEL_PATH:-${project_root}/models/center_lane_best.pt}
 seg_model_sha=${KMU_SEG_MODEL_SHA256:-89427ee98034e0fdcee772b194923d33f532f07aa825905ec10a205687d71996}
-if [[ ${mode} == unified-dry-run || ${mode} == unified-live ]]; then
+if [[ ${mode} == unified-dry-run || ${mode} == unified-live || ${mode} == unified-no-stop-live ]]; then
   model=${seg_model}
   model_sha=${seg_model_sha}
 fi
@@ -92,7 +96,7 @@ docker image inspect "${image}" >/dev/null 2>&1 || fail "container image is miss
 actual_sha=$(sha256sum "${model}" | awk '{print $1}')
 [[ ${actual_sha} == "${model_sha}" ]] || fail "model SHA-256 mismatch: ${actual_sha}"
 
-if [[ ${mode} == dry-run || ${mode} == live || ${mode} == sensor-mode-dry-run || ${mode} == sensor-cone-live || ${mode} == unified-dry-run || ${mode} == unified-live ]]; then
+if [[ ${mode} == dry-run || ${mode} == live || ${mode} == sensor-mode-dry-run || ${mode} == sensor-cone-live || ${mode} == unified-dry-run || ${mode} == unified-live || ${mode} == unified-no-stop-live ]]; then
   [[ -e ${camera_requested} ]] || fail "camera device is missing: ${camera_requested}"
   camera=$(readlink -f -- "${camera_requested}")
   [[ ${camera} == /dev/video* ]] || fail "camera did not resolve to /dev/video*: ${camera}"
@@ -100,13 +104,13 @@ fi
 if [[ ${mode} == video ]]; then
   [[ -r ${video_path} ]] || fail "video is missing or unreadable: ${video_path}"
 fi
-if [[ ${mode} == cone-dry-run || ${mode} == sensor-mode-dry-run || ${mode} == sensor-cone-live || ${mode} == unified-dry-run || ${mode} == unified-live ]]; then
+if [[ ${mode} == cone-dry-run || ${mode} == sensor-mode-dry-run || ${mode} == sensor-cone-live || ${mode} == unified-dry-run || ${mode} == unified-live || ${mode} == unified-no-stop-live ]]; then
   [[ -e ${lidar_requested} ]] || fail "LiDAR device is missing: ${lidar_requested}"
   lidar=$(readlink -f -- "${lidar_requested}")
   [[ ${lidar} == /dev/ttyUSB* || ${lidar} == /dev/ttyACM* ]] || \
     fail "LiDAR did not resolve to /dev/ttyUSB* or /dev/ttyACM*: ${lidar}"
 fi
-if [[ ${mode} == live || ${mode} == sensor-cone-live || ${mode} == unified-live ]]; then
+if [[ ${mode} == live || ${mode} == sensor-cone-live || ${mode} == unified-live || ${mode} == unified-no-stop-live ]]; then
   [[ ${confirmed} == true ]] || fail 'set KMU_HARDWARE_CONFIRMED=true only after the hardware runbook'
   [[ -e ${serial_requested} ]] || fail "serial device is missing: ${serial_requested}"
   [[ ${serial_requested} == /dev/serial/by-id/* ]] || \
@@ -175,7 +179,7 @@ if [[ ${mode} == cone-dry-run ]]; then
     planning_frame:=base_link
     viewer_enabled:=false
     viewer_record_path:=/tmp/kmu-cone-viewer-latest.png)
-elif [[ ${mode} == unified-dry-run || ${mode} == unified-live ]]; then
+elif [[ ${mode} == unified-dry-run || ${mode} == unified-live || ${mode} == unified-no-stop-live ]]; then
   launch_command=(ros2 launch kmu_ire_track ire_unified_autonomy.launch.py
     camera_device:="${camera}"
     model_path:="${model}"
@@ -188,9 +192,12 @@ elif [[ ${mode} == unified-dry-run || ${mode} == unified-live ]]; then
     cone_planner_config:="${project_root}/configs/cone/cone_planner.yaml"
     lidar_system_config:="${project_root}/configs/cone/cone_lidar_cv.yaml"
     viewer:="${display}")
-  if [[ ${mode} == unified-live ]]; then
+  if [[ ${mode} == unified-live || ${mode} == unified-no-stop-live ]]; then
     launch_command+=(output_topic:=/rc_car/drive_cmd serial_bridge:=true
       dry_run:=false hardware_confirmed:=true)
+    if [[ ${mode} == unified-no-stop-live ]]; then
+      launch_command+=(competition_no_stop:=true)
+    fi
   else
     launch_command+=(output_topic:=/rc_car/drive_cmd_preview
       serial_bridge:=false dry_run:=true hardware_confirmed:=false)
@@ -260,6 +267,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "MODE=${mode}"
+if [[ ${mode} == unified-no-stop-live ]]; then
+  echo 'WARNING=COMPETITION_NO_STOP_ACTIVE: transient command loss retains motion'
+fi
 echo "LOG=${log_dir}/competition.log"
 "${docker_base[@]}" "${image}" bash -lc '
   mkdir -p "$HOME" "$YOLO_CONFIG_DIR"

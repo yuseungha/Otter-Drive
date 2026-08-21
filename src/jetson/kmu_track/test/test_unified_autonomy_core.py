@@ -3,6 +3,7 @@
 import unittest
 
 from kmu_track.unified_autonomy_core import (
+    CompetitionDriveContinuity,
     ConeSwitchConfig,
     ContinuousPurePursuit,
     DriveCountConfig,
@@ -87,6 +88,19 @@ class TestConeModeSelector(unittest.TestCase):
             PAIR, cone_path_valid=True, obstacle_detected=True)
         self.assertEqual(mode, PlannerMode.CONE)
 
+    def test_timer_does_not_count_one_scan_as_multiple_frames(self) -> None:
+        selector = PlannerModeSelector(ConeSwitchConfig(
+            enter_confirm_frames=2))
+        mode = selector.update(
+            PAIR, cone_path_valid=True, cone_observation_id=1)
+        self.assertEqual(mode, PlannerMode.LANE)
+        mode = selector.update(
+            PAIR, cone_path_valid=True, cone_observation_id=1)
+        self.assertEqual(mode, PlannerMode.LANE)
+        mode = selector.update(
+            PAIR, cone_path_valid=True, cone_observation_id=2)
+        self.assertEqual(mode, PlannerMode.CONE)
+
 
 class TestContinuousPurePursuit(unittest.TestCase):
     def setUp(self) -> None:
@@ -131,6 +145,68 @@ class TestContinuousPurePursuit(unittest.TestCase):
             ((0.0, 0.0), (0.01, 0.0)), PlannerMode.LANE, dt_s=0.05)
         self.assertFalse(result.path_valid)
         self.assertGreater(result.speed_mps, 0.0)
+
+
+class TestCompetitionDriveContinuity(unittest.TestCase):
+    def setUp(self) -> None:
+        self.policy = CompetitionDriveContinuity(320, 550, 650)
+
+    def test_startup_remains_neutral_until_valid_departure(self) -> None:
+        self.assertEqual(
+            self.policy.apply(0, 0, source_valid=False),
+            (0, 0, 'awaiting_first_forward'),
+        )
+        self.assertFalse(self.policy.started)
+
+    def test_start_can_wait_for_serial_gate(self) -> None:
+        self.assertEqual(
+            self.policy.apply(
+                500, 40, source_valid=True, start_allowed=False),
+            (0, 0, 'awaiting_first_forward'),
+        )
+
+    def test_valid_departure_is_latched(self) -> None:
+        self.assertEqual(
+            self.policy.apply(500, -120, source_valid=True),
+            (500, -120, 'fresh_forward'),
+        )
+        self.assertTrue(self.policy.started)
+
+    def test_ire_timeout_holds_last_forward_command(self) -> None:
+        self.policy.apply(500, -120, source_valid=True)
+        self.assertEqual(
+            self.policy.apply(0, 0, source_valid=False),
+            (500, -120, 'hold_last_forward'),
+        )
+
+    def test_zero_candidate_after_start_cannot_stop(self) -> None:
+        self.policy.apply(500, 100, source_valid=True)
+        throttle, steering, _reason = self.policy.apply(
+            0, -650, source_valid=True)
+        self.assertEqual((throttle, steering), (500, 100))
+
+    def test_transitions_update_without_zero_gap(self) -> None:
+        commands = [
+            self.policy.apply(500, 10, source_valid=True),
+            self.policy.apply(0, 0, source_valid=False),
+            self.policy.apply(450, -30, source_valid=True),
+            self.policy.apply(0, 0, source_valid=False),
+            self.policy.apply(520, 20, source_valid=True),
+        ]
+        self.assertTrue(all(
+            throttle > 0 for throttle, _steering, _reason in commands))
+
+    def test_output_is_saturated(self) -> None:
+        self.assertEqual(
+            self.policy.apply(900, 900, source_valid=True)[:2],
+            (550, 650),
+        )
+
+    def test_minimum_throttle_is_enforced(self) -> None:
+        self.assertEqual(
+            self.policy.apply(1, 0, source_valid=True)[0],
+            320,
+        )
 
 
 if __name__ == '__main__':

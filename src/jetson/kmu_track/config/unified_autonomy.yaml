@@ -10,10 +10,13 @@ unified_autonomy:
     lane_command_topic: /rc_car/ire_lane_cmd
     lane_status_topic: /vehicle/lane_control_status
     lane_command_timeout_sec: 0.25
+    perception_timeout_sec: 0.35
     active_path_topic: /planning/active_path
     control_rate_hz: 20.0
     # The launch file overrides this with serial_bridge:=true in live mode.
     auto_arm_drive: false
+    # Unsafe competition-only override; keep false for every normal profile.
+    competition_no_stop_enabled: false
 
     # LANE -> CONE: one left/right pair plus a valid cone center path.
     enter_distance_m: 0.90

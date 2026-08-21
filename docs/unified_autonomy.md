@@ -78,15 +78,50 @@ ros2 topic echo /rc_car/drive_cmd_preview
 
 ## Arduino 연결
 
+일반 안전 프로필:
+
 ```bash
 ./scripts/run_competition.sh --unified-live
 ```
 
-통합 플래너에는 장애물 정지, 라바콘 접촉 정지, 경로 유실 정지 로직이 없다.
-Live 모드에서는 기존 Arduino 통신 계층의 reset/펌웨어 확인이 끝나
+경기 전용 무정지 프로필:
+
+```bash
+./scripts/run_competition.sh --unified-no-stop-live
+```
+
+`--unified-live`는 기존 안전 동작을 보존한다. IRE 명령이 만료되거나 host
+명령이 `0.20 s` 이상 끊기면 정차한다. `--unified-no-stop-live`만
+`competition_no_stop_enabled=true`를 통합 노드와 시리얼 브리지에 동시에
+적용한다. 정상 양의 throttle이 한 번 전달된 뒤에는 다음 소프트웨어 입력
+손실에서 마지막 양의 throttle과 steering을 유지하며, 동적 arm/deadman
+false도 무시한다. 카메라 또는 lane controller 프로세스 종료도 전체 launch
+종료로 전파하지 않는다. 시작 전에는 여전히 `[0,0]` 상태로 대기한다.
+
+두 프로필 모두 Arduino 통신 계층의 reset/펌웨어 확인이 끝나
 `/rc_car/serial_ready=true`가 되는 즉시 통합 노드가 arm/deadman을 자동으로
 활성화한다. 별도의 수동 arm 명령 없이 최소 전진 출력부터 모터로 전달된다.
 명령 범위와 serial reset 확인 절차는 펌웨어 호환을 위해 그대로 사용한다.
+
+무정지 프로필에서도 아래 경로는 정차를 유지한다.
+
+- `/vehicle/estop=true`
+- 시리얼 단선·partial write·펌웨어 watchdog
+- steering feedback fault 또는 설정 범위 위반
+- 프로세스 종료 및 전원 상실
+
+따라서 소프트웨어 테스트는 일시적인 perception/IRE/host command 손실에서
+`[0,0]` 또는 `X`를 만들지 않는다는 범위의 보증이다. 실제 코스 연속 주행은
+리프트 테스트, 저속 직선 테스트, 모드 전환 실차 테스트 완료 후 판단한다.
+
+활성 여부 확인:
+
+```bash
+ros2 param get /unified_autonomy competition_no_stop_enabled
+ros2 param get /serial_bridge competition_no_stop_enabled
+ros2 topic echo /vehicle/unified_autonomy_status
+ros2 topic echo /rc_car/tx_stats
+```
 
 ## 먼저 보정할 값
 

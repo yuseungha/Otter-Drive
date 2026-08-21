@@ -64,6 +64,8 @@ class SerialBridge(Node):
             'stale_steer_ramp_counts_per_tick': 120,
             'estop_center_rate_counts_per_tick': 120,
             'estop_center_timeout_sec': 1.0,
+            'competition_no_stop_enabled': False,
+            'competition_minimum_throttle_counts': 320,
         }
         for name, value in parameters.items():
             self.declare_parameter(name, value)
@@ -122,6 +124,11 @@ class SerialBridge(Node):
             self.get_parameter('estop_center_rate_counts_per_tick').value)
         estop_center_timeout = float(
             self.get_parameter('estop_center_timeout_sec').value)
+        self._competition_no_stop = bool(
+            self.get_parameter('competition_no_stop_enabled').value)
+        self._competition_minimum_throttle = int(
+            self.get_parameter(
+                'competition_minimum_throttle_counts').value)
         validate_bridge_config(
             serial_port=self._port,
             baud_rate=self._baud,
@@ -140,6 +147,9 @@ class SerialBridge(Node):
             stale_steer_ramp_counts_per_tick=stale_steer_ramp,
             estop_center_rate_counts_per_tick=estop_center_rate,
             estop_center_timeout_sec=estop_center_timeout,
+            competition_no_stop_enabled=self._competition_no_stop,
+            competition_minimum_throttle_counts=(
+                self._competition_minimum_throttle),
         )
         self._safety = BridgeSafetyState(
             command_timeout_sec=command_timeout,
@@ -147,6 +157,9 @@ class SerialBridge(Node):
             stale_steer_ramp_counts_per_tick=stale_steer_ramp,
             estop_center_rate_counts_per_tick=estop_center_rate,
             estop_center_timeout_sec=estop_center_timeout,
+            competition_no_stop_enabled=self._competition_no_stop,
+            competition_minimum_throttle_counts=(
+                self._competition_minimum_throttle),
         )
         self._serial = None
         self._rx_buffer = bytearray()
@@ -225,6 +238,11 @@ class SerialBridge(Node):
             f'drive_enabled={self._drive_enabled} '
             f'limits=T[{self._throttle_min},{self._throttle_max}] '
             f'S[{self._steering_min},{self._steering_max}]')
+        if self._competition_no_stop:
+            self.get_logger().warn(
+                'COMPETITION NO-STOP ACTIVE: host timeout and dynamic '
+                'arm/deadman release retain the last forward command; '
+                'E-stop and hardware/serial faults still stop the vehicle')
 
     @staticmethod
     def _normalize_throttle(value):
@@ -309,6 +327,14 @@ class SerialBridge(Node):
     def _operator_armed_callback(self, message):
         requested = bool(message.data)
         if not requested:
+            if (
+                getattr(self, '_competition_no_stop', False)
+                and self._safety.continuous_drive_started
+            ):
+                self.get_logger().warn(
+                    'Ignoring dynamic disarm after competition departure',
+                    throttle_duration_sec=1.0)
+                return
             was_armed = self._operator_armed
             self._operator_armed = False
             self._operator_deadman = False
@@ -345,6 +371,14 @@ class SerialBridge(Node):
     def _operator_deadman_callback(self, message):
         requested = bool(message.data)
         if not requested:
+            if (
+                getattr(self, '_competition_no_stop', False)
+                and self._safety.continuous_drive_started
+            ):
+                self.get_logger().warn(
+                    'Ignoring dynamic deadman release after competition '
+                    'departure', throttle_duration_sec=1.0)
+                return
             was_active = self._operator_deadman
             self._operator_deadman = False
             self._safety.last_command_at = None
@@ -366,6 +400,7 @@ class SerialBridge(Node):
         self._safety.last_command_at = None
         self._safety.throttle = 0
         self._safety.steering = 0
+        self._safety.clear_continuity()
         self._stop_pending = True
         self.get_logger().warn(f'Safe stop requested: {reason}')
 
@@ -485,6 +520,7 @@ class SerialBridge(Node):
         self._safety.throttle = 0
         self._safety.steering = 0
         self._safety.gear = GEAR_LOW
+        self._safety.clear_continuity()
         self._publish_ready(False)
         self._publish_connected(True)
         self.get_logger().info(
@@ -506,6 +542,7 @@ class SerialBridge(Node):
         self._steering_current_adc = None
         self._steering_feedback_at = None
         self._safety.last_command_at = None
+        self._safety.clear_continuity()
         if block_recovery:
             self._recovery_blocked = True
             self._publish_recovery_blocked(True)
@@ -558,7 +595,13 @@ class SerialBridge(Node):
             self._safety.command_stale
             and now - self._last_stale_warning_at >= 1.0
         ):
-            self.get_logger().warn('drive_cmd stale; throttle neutralized')
+            warning = (
+                'drive_cmd stale; holding last forward command'
+                if getattr(self, '_competition_no_stop', False)
+                and self._safety.continuous_drive_started
+                else 'drive_cmd stale; throttle neutralized'
+            )
+            self.get_logger().warn(warning)
             self._last_stale_warning_at = now
         self._last_stale_state = self._safety.command_stale
         if decision is None:
@@ -566,12 +609,18 @@ class SerialBridge(Node):
                 self._stats['suppressed_estop'] += 1
             return
         if decision.stale:
-            self._host_timeout_latched = True
-            self._request_stop('host_command_timeout')
-            if self._startup_stop_sent and self._serial is not None:
-                if self._write_frame(b'X\n'):
-                    self._stop_pending = False
-            return
+            if not (
+                getattr(self, '_competition_no_stop', False)
+                and self._safety.continuous_drive_started
+                and decision.kind == 'D'
+                and decision.throttle > 0
+            ):
+                self._host_timeout_latched = True
+                self._request_stop('host_command_timeout')
+                if self._startup_stop_sent and self._serial is not None:
+                    if self._write_frame(b'X\n'):
+                        self._stop_pending = False
+                return
         if self._safety.estop_latched:
             ready = True
         else:

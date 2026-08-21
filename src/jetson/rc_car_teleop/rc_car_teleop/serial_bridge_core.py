@@ -62,6 +62,8 @@ def validate_bridge_config(
     stale_steer_ramp_counts_per_tick: int,
     estop_center_rate_counts_per_tick: int,
     estop_center_timeout_sec: float,
+    competition_no_stop_enabled: bool = False,
+    competition_minimum_throttle_counts: int = 1,
 ) -> None:
     """Validate every timing and motion gate before serial can be opened."""
 
@@ -148,6 +150,17 @@ def validate_bridge_config(
         and steering_min <= 0 <= steering_max
     ):
         raise ValueError('confirmed throttle and steering ranges must include zero')
+    if competition_no_stop_enabled:
+        if (
+            isinstance(competition_minimum_throttle_counts, bool)
+            or not throttle_min
+            <= competition_minimum_throttle_counts
+            <= throttle_max
+            or competition_minimum_throttle_counts <= 0
+        ):
+            raise ValueError(
+                'competition_minimum_throttle_counts must be positive and '
+                'inside the confirmed throttle range')
 
 
 def parse_debug_line(line: str) -> Optional[tuple[int, int]]:
@@ -372,6 +385,8 @@ class BridgeSafetyState:
         stale_steer_ramp_counts_per_tick: int = 120,
         estop_center_rate_counts_per_tick: int = 120,
         estop_center_timeout_sec: float = 1.0,
+        competition_no_stop_enabled: bool = False,
+        competition_minimum_throttle_counts: int = 1,
     ) -> None:
         timing_values = (
             command_timeout_sec,
@@ -390,11 +405,18 @@ class BridgeSafetyState:
             raise ValueError('estop center rate must be positive')
         if estop_center_timeout_sec <= 0.0:
             raise ValueError('estop center timeout must be positive')
+        if competition_minimum_throttle_counts <= 0:
+            raise ValueError('competition minimum throttle must be positive')
         self.command_timeout_sec = float(command_timeout_sec)
         self.stale_steer_hold_sec = float(stale_steer_hold_sec)
         self.stale_ramp = int(stale_steer_ramp_counts_per_tick)
         self.estop_ramp = int(estop_center_rate_counts_per_tick)
         self.estop_timeout_sec = float(estop_center_timeout_sec)
+        self.competition_no_stop_enabled = bool(
+            competition_no_stop_enabled)
+        self.competition_minimum_throttle_counts = int(
+            competition_minimum_throttle_counts)
+        self.continuous_drive_started = False
         self.throttle = 0
         self.steering = 0
         self.gear = -1
@@ -413,11 +435,27 @@ class BridgeSafetyState:
         """Store a fresh command unless the E-stop latch is active."""
         if self.estop_latched:
             return False
+        if (
+            self.competition_no_stop_enabled
+            and self.continuous_drive_started
+            and int(throttle) <= 0
+        ):
+            # A fresh upstream soft-stop sample must not replace the last
+            # valid forward command after competition departure.
+            self.last_command_at = float(now)
+            self.command_stale = False
+            return True
         self.throttle = int(throttle)
         self.steering = int(steering)
         self.gear = int(gear)
         self.last_command_at = float(now)
         self.command_stale = False
+        if self.competition_no_stop_enabled and self.throttle > 0:
+            self.throttle = max(
+                self.throttle,
+                self.competition_minimum_throttle_counts,
+            )
+            self.continuous_drive_started = True
         return True
 
     def latch_estop(self, now: float) -> bool:
@@ -445,7 +483,13 @@ class BridgeSafetyState:
         self.steering = 0
         self.last_command_at = None
         self.command_stale = False
+        self.continuous_drive_started = False
         return True
+
+    def clear_continuity(self) -> None:
+        """Require a new valid departure after a real stop or bridge fault."""
+
+        self.continuous_drive_started = False
 
     def decision(self, now: float) -> Optional[FrameDecision]:
         """Return the frame the bridge may write on this timer tick."""
@@ -461,6 +505,17 @@ class BridgeSafetyState:
             return FrameDecision(
                 'D', self.throttle, self.steering, self.gear, False)
         self.command_stale = True
+        if (
+            self.competition_no_stop_enabled
+            and self.continuous_drive_started
+        ):
+            return FrameDecision(
+                'D',
+                max(self.throttle, self.competition_minimum_throttle_counts),
+                self.steering,
+                self.gear,
+                True,
+            )
         if age <= self.command_timeout_sec + self.stale_steer_hold_sec:
             return FrameDecision('D', 0, self.steering, self.gear, True)
         self.steering = ramp_to_zero(self.steering, self.stale_ramp)

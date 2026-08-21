@@ -21,6 +21,7 @@ from std_msgs.msg import Bool, Int32MultiArray, String
 
 from kmu_track.lane_control_core import ACTUATION_GATE_REASONS
 from kmu_track.unified_autonomy_core import (
+    CompetitionDriveContinuity,
     ConeSwitchConfig,
     ContinuousPurePursuit,
     DriveCountConfig,
@@ -54,9 +55,11 @@ class UnifiedAutonomyNode(Node):
         self.declare_parameter(
             'lane_status_topic', '/vehicle/lane_control_status')
         self.declare_parameter('lane_command_timeout_sec', 0.25)
+        self.declare_parameter('perception_timeout_sec', 0.35)
         self.declare_parameter('active_path_topic', '/planning/active_path')
         self.declare_parameter('control_rate_hz', 20.0)
         self.declare_parameter('auto_arm_drive', False)
+        self.declare_parameter('competition_no_stop_enabled', False)
         self._declare_dataclass(ConeSwitchConfig)
         self._declare_dataclass(PurePursuitConfig)
         self._declare_dataclass(DriveCountConfig)
@@ -71,10 +74,16 @@ class UnifiedAutonomyNode(Node):
             raise ValueError('control_rate_hz must be positive')
         self.auto_arm_drive = bool(
             self.get_parameter('auto_arm_drive').value)
+        self.competition_no_stop_enabled = bool(
+            self.get_parameter('competition_no_stop_enabled').value)
         self.lane_command_timeout_sec = float(
             self.get_parameter('lane_command_timeout_sec').value)
         if self.lane_command_timeout_sec <= 0.0:
             raise ValueError('lane_command_timeout_sec must be positive')
+        self.perception_timeout_sec = float(
+            self.get_parameter('perception_timeout_sec').value)
+        if self.perception_timeout_sec <= 0.0:
+            raise ValueError('perception_timeout_sec must be positive')
         self.serial_ready = False
 
         self.switch_config = self._load_dataclass(ConeSwitchConfig)
@@ -87,6 +96,16 @@ class UnifiedAutonomyNode(Node):
             obstacle_clear_sec=self.obstacle_config.clear_sec,
         )
         self.controller = ContinuousPurePursuit(self.pursuit_config)
+        self.continuity = CompetitionDriveContinuity(
+            minimum_throttle_counts=(
+                self.count_config.minimum_throttle_counts),
+            maximum_throttle_counts=max(
+                self.count_config.lane_throttle_counts,
+                self.count_config.cone_throttle_counts,
+            ),
+            maximum_steering_counts=(
+                self.count_config.maximum_steering_counts),
+        )
 
         latched = QoSProfile(depth=1)
         latched.reliability = ReliabilityPolicy.RELIABLE
@@ -131,6 +150,11 @@ class UnifiedAutonomyNode(Node):
         self._ire_lane_status_at = None
         self._ire_lane_gate_active = False
         self._ire_lane_gate_reason = 'waiting_for_status'
+        self._lane_path_at = None
+        self._cone_path_at = None
+        self._cones_at = None
+        self._obstacle_points_at = None
+        self._cone_observation_id = 0
         self.lane_path_valid = False
         self.cone_path_valid = False
         self.obstacle_vehicle: ObstacleVehicle | None = None
@@ -192,6 +216,11 @@ class UnifiedAutonomyNode(Node):
                 self.auto_arm_drive,
             )
         )
+        if self.competition_no_stop_enabled:
+            self.get_logger().warn(
+                'COMPETITION NO-STOP ACTIVE: after the first valid forward '
+                'command, transient perception/IRE loss retains the last '
+                'positive throttle and steering command')
 
     def _on_serial_ready(self, message: Bool) -> None:
         self.serial_ready = bool(message.data)
@@ -205,9 +234,14 @@ class UnifiedAutonomyNode(Node):
             return
         lane_ready = self._ire_lane_ready(time.monotonic())
         mode = getattr(self.selector, 'mode', PlannerMode.LANE)
+        keep_armed = bool(
+            self.competition_no_stop_enabled and self.continuity.started)
         requested = Bool(data=bool(
-            self.serial_ready
-            and (mode != PlannerMode.LANE or lane_ready)
+            keep_armed
+            or (
+                self.serial_ready
+                and (mode != PlannerMode.LANE or lane_ready)
+            )
         ))
         # Deadman first lets the serial bridge remember the request before
         # processing arm. Repeating both at the control rate handles DDS
@@ -287,6 +321,7 @@ class UnifiedAutonomyNode(Node):
     def _on_lane_path(self, message: Path) -> None:
         points = self._path_points(message)
         self.lane_path_valid = len(points) >= 2
+        self._lane_path_at = time.monotonic()
         if self.lane_path_valid:
             self.lane_path = points
             if self.selector.mode == PlannerMode.OBSTACLE_AVOID:
@@ -295,12 +330,15 @@ class UnifiedAutonomyNode(Node):
     def _on_cone_path(self, message: Path) -> None:
         points = self._path_points(message)
         self.cone_path_valid = len(points) >= 2
+        self._cone_path_at = time.monotonic()
         if self.cone_path_valid:
             self.cone_path = points
         self._update_mode()
 
     def _on_cones(self, message: PoseArray) -> None:
         self.cones = self._pose_array_points(message)
+        self._cones_at = time.monotonic()
+        self._cone_observation_id += 1
         self._update_mode()
 
     def _on_raw_cones(self, message: PoseArray) -> None:
@@ -330,6 +368,7 @@ class UnifiedAutonomyNode(Node):
 
     def _on_obstacle_points(self, message: PoseArray) -> None:
         self.lidar_obstacle_points = self._pose_array_points(message)
+        self._obstacle_points_at = time.monotonic()
         observation = detect_obstacle_vehicle(
             self.lidar_obstacle_points,
             self._all_cones(),
@@ -383,12 +422,31 @@ class UnifiedAutonomyNode(Node):
             self.obstacle_config.lane_change_distance_m,
         )
 
-    def _update_mode(self) -> None:
+    def _fresh(self, observed_at: float | None, now: float) -> bool:
+        return bool(
+            observed_at is not None
+            and now - observed_at <= self.perception_timeout_sec
+        )
+
+    def _update_mode(self, now: float | None = None) -> None:
+        timestamp = time.monotonic() if now is None else float(now)
         previous = self.selector.mode
         self.selector.update(
-            self.cones,
-            cone_path_valid=self.cone_path_valid,
-            obstacle_detected=self.obstacle_detected,
+            (
+                self.cones
+                if self._fresh(self._cones_at, timestamp)
+                else np.empty((0, 2), dtype=np.float64)
+            ),
+            cone_path_valid=bool(
+                self.cone_path_valid
+                and self._fresh(self._cone_path_at, timestamp)
+            ),
+            obstacle_detected=bool(
+                self.obstacle_detected
+                and self._fresh(self._obstacle_points_at, timestamp)
+            ),
+            cone_observation_id=self._cone_observation_id,
+            now=timestamp,
         )
         if self.selector.mode != previous:
             if self.selector.mode == PlannerMode.OBSTACLE_AVOID:
@@ -411,12 +469,24 @@ class UnifiedAutonomyNode(Node):
     def _publish_mode(self) -> None:
         self.mode_pub.publish(String(data=self.selector.mode.value))
 
-    def _selected_path(self) -> np.ndarray:
+    def _selected_path(self, now: float) -> np.ndarray:
         if self.selector.mode == PlannerMode.CONE:
-            return self.cone_path
+            return (
+                self.cone_path
+                if self._fresh(self._cone_path_at, now)
+                else np.empty((0, 2), dtype=np.float64)
+            )
         if self.selector.mode == PlannerMode.OBSTACLE_AVOID:
-            return self.avoidance_path
-        return self.lane_path
+            return (
+                self.avoidance_path
+                if self._fresh(self._lane_path_at, now)
+                else np.empty((0, 2), dtype=np.float64)
+            )
+        return (
+            self.lane_path
+            if self._fresh(self._lane_path_at, now)
+            else np.empty((0, 2), dtype=np.float64)
+        )
 
     def _publish_active_path(self, path: np.ndarray) -> None:
         message = Path()
@@ -434,9 +504,10 @@ class UnifiedAutonomyNode(Node):
     def _control_tick(self) -> None:
         self._publish_drive_gate()
         now = time.monotonic()
+        self._update_mode(now)
         dt = max(1.0e-3, now - self._last_tick)
         self._last_tick = now
-        path = self._selected_path()
+        path = self._selected_path(now)
         result = self.controller.command(
             path,
             self.selector.mode,
@@ -447,9 +518,11 @@ class UnifiedAutonomyNode(Node):
             if ire_lane_ready:
                 throttle, steering = self.ire_lane_command
                 command_source = 'ire_pid'
+                source_valid = throttle > 0
             else:
                 throttle, steering = 0, 0
                 command_source = 'ire_wait'
+                source_valid = False
         else:
             throttle, steering = command_to_counts(
                 result,
@@ -458,8 +531,21 @@ class UnifiedAutonomyNode(Node):
                 self.count_config,
             )
             command_source = 'pure_pursuit'
+            source_valid = True
+        continuity_reason = 'disabled'
+        if self.competition_no_stop_enabled:
+            throttle, steering, continuity_reason = self.continuity.apply(
+                throttle,
+                steering,
+                source_valid=source_valid,
+                start_allowed=(
+                    self.serial_ready if self.auto_arm_drive else True),
+            )
+            if continuity_reason == 'hold_last_forward':
+                command_source = 'competition_hold'
         self.command_pub.publish(
             Int32MultiArray(data=[throttle, steering]))
+        self._publish_drive_gate()
         self._publish_active_path(path)
 
         target = PointStamped()
@@ -473,6 +559,10 @@ class UnifiedAutonomyNode(Node):
         self.status_pub.publish(String(data=json.dumps({
             'mode': self.selector.mode.value,
             'auto_arm_drive': self.auto_arm_drive,
+            'competition_no_stop_enabled': (
+                self.competition_no_stop_enabled),
+            'continuous_drive_started': self.continuity.started,
+            'continuity_reason': continuity_reason,
             'serial_ready': self.serial_ready,
             'command_source': command_source,
             'ire_lane_ready': ire_lane_ready,

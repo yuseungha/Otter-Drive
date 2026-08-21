@@ -1,19 +1,80 @@
 """Hardware-free safety tests for the ROS-to-Arduino serial bridge."""
 
 from collections import deque
+from pathlib import Path
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
 
-from rc_car_teleop.serial_bridge import (
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+def _install_ros_stubs() -> None:
+    """Keep bridge I/O tests runnable outside a ROS installation."""
+
+    if 'rclpy' in sys.modules:
+        return
+
+    class FakeNode:
+        pass
+
+    class FakePolicy:
+        RELIABLE = object()
+        TRANSIENT_LOCAL = object()
+
+    class FakeQoSProfile:
+        def __init__(self, depth=1, **_kwargs):
+            self.depth = depth
+            self.reliability = None
+            self.durability = None
+
+    class FakeMessage:
+        def __init__(self):
+            self.data = None
+
+    rclpy = types.ModuleType('rclpy')
+    rclpy_node = types.ModuleType('rclpy.node')
+    rclpy_node.Node = FakeNode
+    rclpy_qos = types.ModuleType('rclpy.qos')
+    rclpy_qos.DurabilityPolicy = FakePolicy
+    rclpy_qos.ReliabilityPolicy = FakePolicy
+    rclpy_qos.QoSProfile = FakeQoSProfile
+    rclpy_executors = types.ModuleType('rclpy.executors')
+    rclpy_executors.ExternalShutdownException = RuntimeError
+    std_msgs = types.ModuleType('std_msgs')
+    std_msgs_msg = types.ModuleType('std_msgs.msg')
+    std_msgs_msg.Bool = FakeMessage
+    std_msgs_msg.Int32 = FakeMessage
+    std_msgs_msg.Int32MultiArray = FakeMessage
+    std_msgs_msg.String = FakeMessage
+    serial = types.ModuleType('serial')
+    serial.SerialException = OSError
+    serial.SerialTimeoutException = TimeoutError
+    sys.modules.update({
+        'rclpy': rclpy,
+        'rclpy.node': rclpy_node,
+        'rclpy.qos': rclpy_qos,
+        'rclpy.executors': rclpy_executors,
+        'std_msgs': std_msgs,
+        'std_msgs.msg': std_msgs_msg,
+        'serial': serial,
+    })
+
+
+_install_ros_stubs()
+
+from rc_car_teleop.serial_bridge import (  # noqa: E402
     EXPECTED_FIRMWARE_CONFIG_BANNER,
     SerialBridge,
 )
-from rc_car_teleop.serial_bridge_core import (
+from rc_car_teleop.serial_bridge_core import (  # noqa: E402
     BridgeSafetyState,
     validate_bridge_config,
 )
-import rc_car_teleop.serial_bridge as serial_bridge_module
+import rc_car_teleop.serial_bridge as serial_bridge_module  # noqa: E402
 
 
 class CapturePublisher:
@@ -289,6 +350,55 @@ def test_host_timeout_latches_disarm_and_emits_x_not_stale_d(monkeypatch):
     assert not bridge._operator_deadman
 
 
+def test_competition_timeout_keeps_writing_last_forward_d(monkeypatch):
+    connection = ScriptedSerial()
+    bridge = ready_bridge(connection)
+    bridge._competition_no_stop = True
+    bridge._competition_minimum_throttle = 40
+    bridge._safety = BridgeSafetyState(
+        command_timeout_sec=0.20,
+        stale_steer_hold_sec=0.0,
+        competition_no_stop_enabled=True,
+        competition_minimum_throttle_counts=40,
+    )
+    bridge._operator_armed = True
+    bridge._operator_deadman = True
+    now = [104.0]
+    monkeypatch.setattr(serial_bridge_module.time, 'monotonic', lambda: now[0])
+    bridge._drive_callback(SimpleNamespace(data=[100, 25]))
+    bridge._write_decision(now[0])
+
+    now[0] = 104.201
+    bridge._write_decision(now[0])
+
+    assert connection.writes == [b'D 100 25\n', b'D 100 25\n']
+    assert not bridge._host_timeout_latched
+    assert bridge._operator_armed
+    assert bridge._operator_deadman
+
+
+def test_competition_dynamic_gate_false_is_ignored_after_departure(
+    monkeypatch,
+):
+    bridge = ready_bridge(ScriptedSerial())
+    bridge._competition_no_stop = True
+    bridge._safety = BridgeSafetyState(
+        competition_no_stop_enabled=True,
+        competition_minimum_throttle_counts=40,
+    )
+    bridge._operator_armed = True
+    bridge._operator_deadman = True
+    monkeypatch.setattr(serial_bridge_module.time, 'monotonic', lambda: 104.0)
+    bridge._drive_callback(SimpleNamespace(data=[100, 25]))
+
+    bridge._operator_deadman_callback(SimpleNamespace(data=False))
+    bridge._operator_armed_callback(SimpleNamespace(data=False))
+
+    assert bridge._operator_armed
+    assert bridge._operator_deadman
+    assert not bridge._stop_pending
+
+
 def test_disarm_acknowledges_timeout_and_clears_stale_status(monkeypatch):
     connection = ScriptedSerial()
     bridge = ready_bridge(connection)
@@ -395,6 +505,13 @@ def test_live_competition_config_is_valid():
     validate_bridge_config(**valid_config())
 
 
+def test_no_stop_competition_config_is_valid():
+    validate_bridge_config(**valid_config(
+        competition_no_stop_enabled=True,
+        competition_minimum_throttle_counts=40,
+    ))
+
+
 def test_default_locked_config_is_valid():
     validate_bridge_config(**valid_config(
         drive_enabled=False,
@@ -425,6 +542,9 @@ def test_default_locked_config_is_valid():
           'throttle_max': 1}, 'unconfirmed'),
         ({'throttle_min': 1}, 'include zero'),
         ({'steering_max': 1001}, 'steering_max'),
+        ({'competition_no_stop_enabled': True,
+          'competition_minimum_throttle_counts': 151},
+         'competition_minimum_throttle_counts'),
     ],
 )
 def test_invalid_config_is_rejected(overrides, message):

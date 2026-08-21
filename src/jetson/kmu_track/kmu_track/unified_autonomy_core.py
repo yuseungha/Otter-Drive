@@ -23,6 +23,66 @@ class PlannerMode(str, Enum):
     CONE = 'CONE'
 
 
+class CompetitionDriveContinuity:
+    """Latch the first valid forward command and reject later soft stops.
+
+    This policy is deliberately opt-in at the ROS adapter.  Before the first
+    valid departure it returns neutral, preserving the normal guarded startup.
+    Once started, missing or non-forward candidates retain the last valid
+    positive throttle and steering command.
+    """
+
+    def __init__(
+        self,
+        minimum_throttle_counts: int,
+        maximum_throttle_counts: int,
+        maximum_steering_counts: int,
+    ) -> None:
+        if not 0 < minimum_throttle_counts <= maximum_throttle_counts:
+            raise ValueError('invalid competition throttle range')
+        if maximum_steering_counts <= 0:
+            raise ValueError('maximum_steering_counts must be positive')
+        self.minimum_throttle_counts = int(minimum_throttle_counts)
+        self.maximum_throttle_counts = int(maximum_throttle_counts)
+        self.maximum_steering_counts = int(maximum_steering_counts)
+        self.started = False
+        self.last_throttle = 0
+        self.last_steering = 0
+
+    def apply(
+        self,
+        throttle: int,
+        steering: int,
+        *,
+        source_valid: bool,
+        start_allowed: bool = True,
+    ) -> tuple[int, int, str]:
+        """Return a bounded forward command or the startup neutral command."""
+
+        bounded_throttle = min(
+            self.maximum_throttle_counts,
+            max(0, int(throttle)),
+        )
+        bounded_steering = min(
+            self.maximum_steering_counts,
+            max(-self.maximum_steering_counts, int(steering)),
+        )
+        candidate_valid = bool(source_valid and bounded_throttle > 0)
+        if candidate_valid and (self.started or start_allowed):
+            self.started = True
+            self.last_throttle = max(
+                self.minimum_throttle_counts, bounded_throttle)
+            self.last_steering = bounded_steering
+            return self.last_throttle, self.last_steering, 'fresh_forward'
+        if self.started:
+            return (
+                self.last_throttle,
+                self.last_steering,
+                'hold_last_forward',
+            )
+        return 0, 0, 'awaiting_first_forward'
+
+
 def yolo_activity_for_mode(mode: str) -> bool | None:
     """Return the requested YOLO activity, or ``None`` for unknown states."""
 
@@ -131,6 +191,8 @@ def nearest_cone_pair(
 class PlannerModeSelector:
     """Coordinate lane, obstacle-avoidance and cone planner selection."""
 
+    _NO_OBSERVATION = object()
+
     def __init__(
         self,
         config: ConeSwitchConfig = ConeSwitchConfig(),
@@ -151,6 +213,7 @@ class PlannerModeSelector:
         self.last_cone_line_at: float | None = None
         self.last_pair: ConePair | None = None
         self.last_obstacle_at: float | None = None
+        self._last_cone_observation_id = self._NO_OBSERVATION
         self.reason = 'startup_lane'
 
     def update(
@@ -159,6 +222,7 @@ class PlannerModeSelector:
         *,
         cone_path_valid: bool,
         obstacle_detected: bool = False,
+        cone_observation_id=None,
         now: float | None = None,
     ) -> PlannerMode:
         timestamp = self._clock() if now is None else float(now)
@@ -173,7 +237,15 @@ class PlannerModeSelector:
         )
 
         if self.mode != PlannerMode.CONE:
-            self.enter_count = self.enter_count + 1 if near_gate else 0
+            observation_is_new = (
+                cone_observation_id is None
+                or cone_observation_id != self._last_cone_observation_id
+            )
+            if not near_gate:
+                self.enter_count = 0
+            elif observation_is_new:
+                self.enter_count += 1
+                self._last_cone_observation_id = cone_observation_id
             if self.enter_count >= self.config.enter_confirm_frames:
                 self.mode = PlannerMode.CONE
                 self.last_cone_line_at = timestamp

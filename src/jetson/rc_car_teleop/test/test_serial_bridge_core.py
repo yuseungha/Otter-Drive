@@ -17,6 +17,7 @@ from rc_car_teleop.serial_bridge_core import (  # noqa: E402
     parse_version_line,
     serial_ready_condition,
     steering_command_to_adc,
+    validate_bridge_config,
 )
 
 
@@ -118,6 +119,78 @@ def test_freshness_neutralizes_before_firmware_watchdog_deadline() -> None:
     assert stale.throttle == 0
     assert stale.steering == -180
     assert 0.31 < FAKE.WATCHDOG_SEC
+
+
+def test_competition_timeout_holds_last_positive_drive_frame() -> None:
+    state = BridgeSafetyState(
+        command_timeout_sec=0.20,
+        competition_no_stop_enabled=True,
+        competition_minimum_throttle_counts=320,
+    )
+    assert state.accept_command(500, -240, -1, 0.0)
+    stale = state.decision(0.21)
+    assert stale == FrameDecision('D', 500, -240, -1, True)
+    assert state.continuous_drive_started
+
+
+def test_competition_soft_zero_preserves_last_forward_command() -> None:
+    state = BridgeSafetyState(
+        competition_no_stop_enabled=True,
+        competition_minimum_throttle_counts=320,
+    )
+    assert state.accept_command(450, 90, -1, 0.0)
+    assert state.accept_command(0, 0, -1, 0.1)
+    assert state.decision(0.1) == FrameDecision('D', 450, 90, -1, False)
+
+
+def test_competition_profile_still_honors_estop() -> None:
+    state = BridgeSafetyState(
+        competition_no_stop_enabled=True,
+        competition_minimum_throttle_counts=320,
+    )
+    state.accept_command(450, 90, -1, 0.0)
+    assert state.latch_estop(0.01)
+    assert state.decision(0.02).throttle == 0
+
+
+def _competition_config(**overrides):
+    values = {
+        'serial_port': '/dev/serial/by-id/fake-controller',
+        'baud_rate': 115200,
+        'send_rate_hz': 20.0,
+        'reconnect_interval_sec': 2.0,
+        'reset_guard_sec': 3.5,
+        'command_timeout_sec': 0.20,
+        'write_timeout_sec': 0.05,
+        'drive_enabled': True,
+        'limits_confirmed': True,
+        'throttle_min': 0,
+        'throttle_max': 700,
+        'steering_min': -650,
+        'steering_max': 650,
+        'stale_steer_hold_sec': 0.20,
+        'stale_steer_ramp_counts_per_tick': 120,
+        'estop_center_rate_counts_per_tick': 120,
+        'estop_center_timeout_sec': 1.0,
+        'competition_no_stop_enabled': True,
+        'competition_minimum_throttle_counts': 320,
+    }
+    values.update(overrides)
+    return values
+
+
+def test_competition_no_stop_config_is_validated() -> None:
+    validate_bridge_config(**_competition_config())
+
+
+def test_competition_minimum_throttle_must_fit_limits() -> None:
+    try:
+        validate_bridge_config(**_competition_config(
+            competition_minimum_throttle_counts=701))
+    except ValueError as error:
+        assert 'competition_minimum_throttle_counts' in str(error)
+    else:
+        raise AssertionError('out-of-range competition throttle was accepted')
 
 
 def test_estop_is_latched_discards_drive_and_centers_before_single_x() -> None:
