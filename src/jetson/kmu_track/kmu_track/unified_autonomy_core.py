@@ -106,6 +106,7 @@ class ConeSwitchConfig:
     minimum_track_width_m: float = 0.35
     maximum_track_width_m: float = 1.20
     maximum_pair_dx_m: float = 0.25
+    minimum_cone_pairs: int = 2
     enter_confirm_frames: int = 1
     exit_missing_sec: float = 0.80
 
@@ -126,6 +127,8 @@ class ConeSwitchConfig:
             raise ValueError('cone switch minima must be nonnegative')
         if self.minimum_track_width_m >= self.maximum_track_width_m:
             raise ValueError('cone track-width range is invalid')
+        if self.minimum_cone_pairs < 1:
+            raise ValueError('minimum_cone_pairs must be at least one')
         if self.enter_confirm_frames < 1:
             raise ValueError('enter_confirm_frames must be at least one')
 
@@ -141,28 +144,28 @@ class ConePair:
     width_m: float
 
 
-def nearest_cone_pair(
+def valid_cone_pairs(
     cone_points: Iterable[Sequence[float]],
     config: ConeSwitchConfig,
-) -> ConePair | None:
-    """Find the nearest plausible left/right pair in vehicle coordinates."""
+) -> tuple[ConePair, ...]:
+    """Return a maximum set of plausible pairs without reusing a cone."""
 
     config.validate()
     try:
         points = np.asarray(list(cone_points), dtype=np.float64)
     except (TypeError, ValueError):
-        return None
+        return ()
     if points.size == 0:
-        return None
+        return ()
     if points.ndim != 2 or points.shape[1] != 2:
-        return None
+        return ()
     points = points[np.all(np.isfinite(points), axis=1)]
     points = points[points[:, 0] >= config.minimum_forward_m]
     left = points[points[:, 1] >= config.minimum_lateral_m]
     right = points[points[:, 1] <= -config.minimum_lateral_m]
-    candidates: list[ConePair] = []
-    for left_x, left_y in left:
-        for right_x, right_y in right:
+    candidates: dict[int, list[tuple[int, ConePair]]] = {}
+    for left_index, (left_x, left_y) in enumerate(left):
+        for right_index, (right_x, right_y) in enumerate(right):
             width = float(left_y - right_y)
             if not (
                 config.minimum_track_width_m
@@ -172,7 +175,7 @@ def nearest_cone_pair(
                 continue
             if abs(float(left_x - right_x)) > config.maximum_pair_dx_m:
                 continue
-            candidates.append(ConePair(
+            pair = ConePair(
                 left_x_m=float(left_x),
                 left_y_m=float(left_y),
                 right_x_m=float(right_x),
@@ -180,12 +183,46 @@ def nearest_cone_pair(
                 center_x_m=float((left_x + right_x) * 0.5),
                 center_y_m=float((left_y + right_y) * 0.5),
                 width_m=width,
-            ))
-    return min(
-        candidates,
+            )
+            candidates.setdefault(left_index, []).append((right_index, pair))
+
+    for edges in candidates.values():
+        edges.sort(key=lambda edge: (
+            abs(edge[1].left_x_m - edge[1].right_x_m),
+            edge[1].center_x_m,
+            abs(edge[1].center_y_m),
+        ))
+
+    matches: dict[int, tuple[int, ConePair]] = {}
+
+    def assign(left_index: int, visited_right: set[int]) -> bool:
+        for right_index, pair in candidates.get(left_index, ()):
+            if right_index in visited_right:
+                continue
+            visited_right.add(right_index)
+            current = matches.get(right_index)
+            if current is None or assign(current[0], visited_right):
+                matches[right_index] = (left_index, pair)
+                return True
+        return False
+
+    for left_index in sorted(candidates):
+        assign(left_index, set())
+
+    return tuple(sorted(
+        (match[1] for match in matches.values()),
         key=lambda pair: (pair.center_x_m, abs(pair.center_y_m)),
-        default=None,
-    )
+    ))
+
+
+def nearest_cone_pair(
+    cone_points: Iterable[Sequence[float]],
+    config: ConeSwitchConfig,
+) -> ConePair | None:
+    """Find the nearest plausible non-overlapping left/right pair."""
+
+    pairs = valid_cone_pairs(cone_points, config)
+    return pairs[0] if pairs else None
 
 
 class PlannerModeSelector:
@@ -212,6 +249,7 @@ class PlannerModeSelector:
         self.enter_count = 0
         self.last_cone_line_at: float | None = None
         self.last_pair: ConePair | None = None
+        self.last_pair_count = 0
         self.last_obstacle_at: float | None = None
         self._last_cone_observation_id = self._NO_OBSERVATION
         self.reason = 'startup_lane'
@@ -226,13 +264,16 @@ class PlannerModeSelector:
         now: float | None = None,
     ) -> PlannerMode:
         timestamp = self._clock() if now is None else float(now)
-        pair = nearest_cone_pair(cone_points, self.config)
+        pairs = valid_cone_pairs(cone_points, self.config)
+        pair = pairs[0] if pairs else None
         self.last_pair = pair
+        self.last_pair_count = len(pairs)
         line_valid = pair is not None and bool(cone_path_valid)
 
         near_gate = (
             line_valid
             and pair is not None
+            and len(pairs) >= self.config.minimum_cone_pairs
             and pair.center_x_m <= self.config.enter_distance_m
         )
 
@@ -298,6 +339,7 @@ class PurePursuitConfig:
     lane_cruise_speed_mps: float = 0.15
     cone_cruise_speed_mps: float = 0.12
     minimum_speed_mps: float = 0.08
+    cone_minimum_speed_mps: float = 0.08
     curvature_slowdown_gain: float = 0.35
     minimum_target_forward_m: float = 0.03
 
@@ -309,16 +351,17 @@ class PurePursuitConfig:
             'wheelbase_m', 'lane_lookahead_m', 'cone_lookahead_m',
             'maximum_steering_angle_rad', 'maximum_steering_rate_rad_s',
             'lane_cruise_speed_mps', 'cone_cruise_speed_mps',
-            'minimum_speed_mps', 'minimum_target_forward_m',
+            'minimum_speed_mps', 'cone_minimum_speed_mps',
+            'minimum_target_forward_m',
         ):
             if float(getattr(self, name)) <= 0.0:
                 raise ValueError(f'{name} must be positive')
         if self.curvature_slowdown_gain < 0.0:
             raise ValueError('curvature_slowdown_gain must be nonnegative')
-        if self.minimum_speed_mps > min(
-            self.lane_cruise_speed_mps, self.cone_cruise_speed_mps
-        ):
-            raise ValueError('minimum speed cannot exceed either cruise speed')
+        if self.minimum_speed_mps > self.lane_cruise_speed_mps:
+            raise ValueError('minimum speed exceeds lane cruise speed')
+        if self.cone_minimum_speed_mps > self.cone_cruise_speed_mps:
+            raise ValueError('cone minimum speed exceeds cone cruise speed')
 
 
 @dataclass(frozen=True)
@@ -398,6 +441,13 @@ class ContinuousPurePursuit:
             else self.config.lane_cruise_speed_mps
         )
 
+    def _minimum_speed(self, mode: PlannerMode) -> float:
+        return (
+            self.config.cone_minimum_speed_mps
+            if mode == PlannerMode.CONE
+            else self.config.minimum_speed_mps
+        )
+
     def _fallback(self, mode: PlannerMode, reason: str) -> PurePursuitResult:
         return PurePursuitResult(
             path_valid=False,
@@ -461,7 +511,7 @@ class ContinuousPurePursuit:
         self.last_steering_angle_rad = steering
         cruise = self._cruise(mode)
         speed = max(
-            self.config.minimum_speed_mps,
+            self._minimum_speed(mode),
             cruise / (
                 1.0 + self.config.curvature_slowdown_gain * abs(curvature)
             ),
@@ -485,6 +535,8 @@ class DriveCountConfig:
     cone_throttle_counts: int = 500
     minimum_throttle_counts: int = 280
     maximum_steering_counts: int = 650
+    steering_gain: float = 1.0
+    steering_gain_right: float = 0.0
     steering_sign: int = -1
 
     def validate(self) -> None:
@@ -498,6 +550,13 @@ class DriveCountConfig:
             raise ValueError('minimum throttle exceeds a cruise throttle')
         if self.maximum_steering_counts <= 0:
             raise ValueError('maximum_steering_counts must be positive')
+        if not isfinite(self.steering_gain) or self.steering_gain <= 0.0:
+            raise ValueError('steering_gain must be positive and finite')
+        if (
+            not isfinite(self.steering_gain_right)
+            or self.steering_gain_right < 0.0
+        ):
+            raise ValueError('steering_gain_right must be finite and nonnegative')
         if self.steering_sign not in (-1, 1):
             raise ValueError('steering_sign must be -1 or 1')
 
@@ -528,8 +587,18 @@ def command_to_counts(
         count_config.minimum_throttle_counts,
         int(round(cruise_throttle * speed_ratio)),
     )
+    right_demand = (
+        result.steering_angle_rad * count_config.steering_sign < 0.0
+    )
+    steering_gain = (
+        count_config.steering_gain_right
+        if right_demand and count_config.steering_gain_right > 0.0
+        else count_config.steering_gain
+    )
     steering_ratio = float(np.clip(
-        result.steering_angle_rad / pursuit_config.maximum_steering_angle_rad,
+        result.steering_angle_rad
+        / pursuit_config.maximum_steering_angle_rad
+        * steering_gain,
         -1.0,
         1.0,
     ))

@@ -25,6 +25,8 @@ unified_autonomy:
     minimum_track_width_m: 0.35
     maximum_track_width_m: 1.20
     maximum_pair_dx_m: 0.25
+    # Require two independently matched left/right gates before CONE entry.
+    minimum_cone_pairs: 2
     enter_confirm_frames: 1
     # CONE -> LANE after the two cone lines have disappeared this long.
     exit_missing_sec: 0.80
@@ -37,13 +39,16 @@ unified_autonomy:
     lane_cruise_speed_mps: 0.15
     cone_cruise_speed_mps: 0.12
     minimum_speed_mps: 0.08
+    cone_minimum_speed_mps: 0.09
     curvature_slowdown_gain: 0.35
     minimum_target_forward_m: 0.03
 
     lane_throttle_counts: 550
-    cone_throttle_counts: 500
+    cone_throttle_counts: 550
     minimum_throttle_counts: 320
     maximum_steering_counts: 650
+    steering_gain: 1.15
+    steering_gain_right: 1.30
     steering_sign: -1
 
     # The vehicle footprint is 0.30 m wide: +/-0.15 m around the path.

@@ -68,9 +68,15 @@ fi
 image=${KMU_CONTAINER_IMAGE:-sandikookmin:cuda126}
 model=${KMU_MODEL_PATH:-${project_root}/models/road_best.pt}
 model_sha=${KMU_MODEL_SHA256:-b54bb33713d753ac7860ebad33c2f166ce9230f63fdf5c30a0528bac45ea779c}
+<<<<<<< HEAD
 seg_model=${KMU_SEG_MODEL_PATH:-${project_root}/models/center_lane_best.pt}
 seg_model_sha=${KMU_SEG_MODEL_SHA256:-89427ee98034e0fdcee772b194923d33f532f07aa825905ec10a205687d71996}
 if [[ ${mode} == unified-dry-run || ${mode} == unified-live || ${mode} == unified-no-stop-live ]]; then
+=======
+seg_model=${KMU_SEG_MODEL_PATH:-${project_root}/models/last_3x.pt}
+seg_model_sha=${KMU_SEG_MODEL_SHA256:-9d2797b3513e633ac944f55ac15b75344d26a9d1751f5c555df175cb0bd548d0}
+if [[ ${mode} == unified-dry-run || ${mode} == unified-live ]]; then
+>>>>>>> 71f6446ad18055c11c45fe04dddba4d40ecc79dc
   model=${seg_model}
   model_sha=${seg_model_sha}
 fi
@@ -146,6 +152,24 @@ docker_base=(
   -v /dev/serial/by-id:/dev/serial/by-id:ro
   -w "${project_root}"
 )
+
+if [[ ${display} == true ]]; then
+  x11_display=${DISPLAY:-:0}
+  x11_authority=${XAUTHORITY:-/run/user/$(id -u)/gdm/Xauthority}
+  x11_number=${x11_display#:}
+  x11_number=${x11_number%%.*}
+  [[ -S /tmp/.X11-unix/X${x11_number} ]] || \
+    fail "X11 display socket is missing for DISPLAY=${x11_display}"
+  [[ -r ${x11_authority} ]] || \
+    fail "X11 authority file is missing or unreadable: ${x11_authority}"
+  docker_base+=(
+    -e DISPLAY="${x11_display}"
+    -e XAUTHORITY=/tmp/kmu-xauthority
+    -e QT_X11_NO_MITSHM=1
+    -v /tmp/.X11-unix:/tmp/.X11-unix:rw
+    -v "${x11_authority}:/tmp/kmu-xauthority:ro"
+  )
+fi
 
 if [[ ${mode} == check ]]; then
   "${docker_base[@]}" "${image}" bash -lc '

@@ -34,7 +34,7 @@ GPU에 올려 둔 채 `LANE`과 `OBSTACLE_AVOID`에서 카메라를 구독하고
 - 우회 경로는 원래 YOLO 차선 경로를 `opposite_lane_offset_m`만큼 부드럽게
   횡이동해 생성한다. 기본 차선 이동량은 `0.55 m`다.
 - 장애물 차량이 `clear_sec` 동안 보이지 않으면 `LANE`으로 복귀한다.
-- 좌측 `y > 0` 라바콘과 우측 `y < 0` 라바콘 한 쌍을 찾는다.
+- 좌측 `y > 0` 라바콘과 우측 `y < 0` 라바콘 쌍을 최소 2개 찾는다.
 - 두 라바콘의 전후 위치 차이와 폭이 설정 범위에 있고 중앙 경로도 유효하며,
   쌍의 중심이 `enter_distance_m` 안으로 들어오면 `CONE`으로 전환한다.
 - `CONE`에서 양쪽 라바콘 쌍 또는 중앙 경로가 `exit_missing_sec` 동안
@@ -127,6 +127,7 @@ ros2 topic echo /rc_car/tx_stats
 
 - `segmentation_lane.yaml`의 영상 사다리꼴 4점과 실제 지면 좌표
 - `unified_autonomy.yaml`의 `wheelbase_m`
+- 라바콘 곡선 속도 하한 `cone_minimum_speed_mps`
 - `maximum_steering_angle_rad`, `maximum_steering_counts`, `steering_sign`
 - `enter_distance_m`, 라바콘 폭 범위, `maximum_pair_dx_m`
 - 차선/라바콘 lookahead와 throttle counts

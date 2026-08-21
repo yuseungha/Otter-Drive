@@ -17,12 +17,27 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import MarkerArray
 
 from .viewer_core import BevGeometry, metric_to_pixel, transform_scan_points
+
+
+def image_message_to_bgr(message: Image) -> np.ndarray:
+    """Convert a bgr8/rgb8 ROS image while respecting padded rows."""
+    if message.encoding not in {"bgr8", "rgb8"}:
+        raise ValueError("unsupported image encoding: %s" % message.encoding)
+    rows = np.frombuffer(message.data, dtype=np.uint8).reshape(
+        message.height, message.step
+    )
+    image = rows[:, : message.width * 3].reshape(
+        message.height, message.width, 3
+    ).copy()
+    if message.encoding == "rgb8":
+        return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    return image
 
 
 class ConeCvViewer(Node):
@@ -53,6 +68,11 @@ class ConeCvViewer(Node):
         self.declare_parameter("viewer_record_path", "", read_only)
         self.declare_parameter("viewer_render_hz", 20.0, read_only)
         self.declare_parameter("viewer_tf_timeout_s", 0.02, read_only)
+        self.declare_parameter("unified_view_enabled", False, read_only)
+        self.declare_parameter(
+            "lane_overlay_topic", "/lane/lane_overlay", read_only
+        )
+        self.declare_parameter("camera_panel_width_px", 720, read_only)
 
         self.geometry = BevGeometry(
             width_px=int(self.get_parameter("viewer_width_px").value),
@@ -89,6 +109,15 @@ class ConeCvViewer(Node):
         elif not requested_gui:
             self.get_logger().info("OpenCV GUI disabled by viewer_enabled=false")
         self.renderer_active = self.gui_active or bool(self.record_path)
+        self.unified_view_enabled = bool(
+            self.get_parameter("unified_view_enabled").value
+        )
+        self.camera_panel_width_px = max(
+            320, int(self.get_parameter("camera_panel_width_px").value)
+        )
+        self.latest_lane_overlay = None
+        self.last_lane_overlay_at = None
+        self.last_scan_at = None
 
         sensor_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -116,6 +145,13 @@ class ConeCvViewer(Node):
             self._scan_callback,
             sensor_qos,
         )
+        if self.unified_view_enabled:
+            self.create_subscription(
+                Image,
+                str(self.get_parameter("lane_overlay_topic").value),
+                self._lane_overlay_callback,
+                sensor_qos,
+            )
         self.create_subscription(
             PoseArray,
             str(self.get_parameter("cones_topic").value),
@@ -164,7 +200,11 @@ class ConeCvViewer(Node):
         self._last_frame_time = time.perf_counter()
         self._fps = 0.0
         self._writer = None
-        self._window_name = "Cone LiDAR BEV"
+        self._window_name = (
+            "KMU Unified Perception"
+            if self.unified_view_enabled
+            else "Cone LiDAR BEV"
+        )
         if self.gui_active:
             cv2.namedWindow(self._window_name, cv2.WINDOW_NORMAL)
         self.render_timer = self.create_timer(1.0 / render_hz, self._render_timer)
@@ -196,6 +236,7 @@ class ConeCvViewer(Node):
         return float(translation.x), float(translation.y), float(yaw)
 
     def _scan_callback(self, scan: LaserScan) -> None:
+        self.last_scan_at = time.monotonic()
         try:
             transform = self._lookup_scan_transform(scan)
             self.raw_scan = transform_scan_points(
@@ -208,6 +249,16 @@ class ConeCvViewer(Node):
             )
         except (TransformException, TypeError, ValueError):
             self.raw_scan = np.empty((0, 2), dtype=float)
+
+    def _lane_overlay_callback(self, message: Image) -> None:
+        try:
+            self.latest_lane_overlay = image_message_to_bgr(message)
+            self.last_lane_overlay_at = time.monotonic()
+        except (ValueError, cv2.error) as error:
+            self.get_logger().error(
+                "lane overlay conversion failed: %s" % error,
+                throttle_duration_sec=2.0,
+            )
 
     def _cones_callback(self, message: PoseArray) -> None:
         self.confirmed_cones = self._pose_points(message)
@@ -459,7 +510,7 @@ class ConeCvViewer(Node):
             "CONE": (0, 190, 255),
             "OBSTACLE_AVOID": (40, 40, 255),
         }
-        mode_text = f"MODE: {self.mission_state}"
+        mode_text = f"DRIVE MODE: {self.mission_state}"
         mode_color = mode_colors.get(self.mission_state, (180, 180, 180))
         font = cv2.FONT_HERSHEY_DUPLEX
         font_scale = 1.05
@@ -512,6 +563,106 @@ class ConeCvViewer(Node):
             )
         return image
 
+    @staticmethod
+    def _live_state(last_seen: float | None, now: float) -> tuple[str, tuple]:
+        if last_seen is None:
+            return "WAITING", (0, 190, 255)
+        age = max(0.0, now - last_seen)
+        if age <= 1.0:
+            return "LIVE %.1fs" % age, (40, 210, 40)
+        return "STALE %.1fs" % age, (0, 0, 255)
+
+    def render_display_frame(self) -> np.ndarray:
+        """Compose camera YOLO and LiDAR BEV into one operator window."""
+        lidar_panel = self.render_frame()
+        if not self.unified_view_enabled:
+            return lidar_panel
+
+        panel_height = self.geometry.height_px
+        panel_width = self.camera_panel_width_px
+        camera_panel = np.full(
+            (panel_height, panel_width, 3), (12, 12, 12), dtype=np.uint8
+        )
+        cv2.putText(
+            camera_panel,
+            "CAMERA + YOLO LANE",
+            (18, 38),
+            cv2.FONT_HERSHEY_DUPLEX,
+            0.9,
+            (235, 235, 235),
+            2,
+            cv2.LINE_AA,
+        )
+
+        image_bottom = max(140, panel_height - 250)
+        if self.latest_lane_overlay is None:
+            text = "WAITING FOR /lane/lane_overlay"
+            size = cv2.getTextSize(
+                text, cv2.FONT_HERSHEY_SIMPLEX, 0.75, 2
+            )[0]
+            cv2.putText(
+                camera_panel,
+                text,
+                ((panel_width - size[0]) // 2, image_bottom // 2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (0, 190, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        else:
+            source_h, source_w = self.latest_lane_overlay.shape[:2]
+            available_w = max(1, panel_width - 24)
+            available_h = max(1, image_bottom - 62)
+            scale = min(available_w / source_w, available_h / source_h)
+            target_w = max(1, int(round(source_w * scale)))
+            target_h = max(1, int(round(source_h * scale)))
+            resized = cv2.resize(
+                self.latest_lane_overlay,
+                (target_w, target_h),
+                interpolation=cv2.INTER_AREA,
+            )
+            x0 = (panel_width - target_w) // 2
+            y0 = 54 + max(0, (available_h - target_h) // 2)
+            camera_panel[y0 : y0 + target_h, x0 : x0 + target_w] = resized
+
+        now = time.monotonic()
+        camera_state, camera_color = self._live_state(
+            self.last_lane_overlay_at, now
+        )
+        lidar_state, lidar_color = self._live_state(self.last_scan_at, now)
+        mode_colors = {
+            "LANE": (40, 210, 40),
+            "CONE": (0, 190, 255),
+            "OBSTACLE_AVOID": (40, 40, 255),
+        }
+        mode_color = mode_colors.get(self.mission_state, (180, 180, 180))
+        status_y = image_bottom + 42
+        status_lines = (
+            ("CAMERA/YOLO: %s" % camera_state, camera_color, 0.72),
+            ("LIDAR: %s" % lidar_state, lidar_color, 0.72),
+            ("DRIVE MODE: %s" % self.mission_state, mode_color, 1.0),
+        )
+        for index, (text, color, scale) in enumerate(status_lines):
+            cv2.putText(
+                camera_panel,
+                text,
+                (20, status_y + index * 48),
+                cv2.FONT_HERSHEY_DUPLEX,
+                scale,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+        cv2.line(
+            camera_panel,
+            (panel_width - 1, 0),
+            (panel_width - 1, panel_height - 1),
+            (90, 90, 90),
+            2,
+        )
+        return np.hstack((camera_panel, lidar_panel))
+
     def _record(self, frame: np.ndarray) -> None:
         if not self.record_path:
             return
@@ -524,7 +675,7 @@ class ConeCvViewer(Node):
                     str(destination),
                     cv2.VideoWriter_fourcc(*codec),
                     float(self.get_parameter("viewer_render_hz").value),
-                    (self.geometry.width_px, self.geometry.height_px),
+                    (frame.shape[1], frame.shape[0]),
                 )
                 if not self._writer.isOpened():
                     self._writer = None
@@ -544,7 +695,7 @@ class ConeCvViewer(Node):
     def _render_timer(self) -> None:
         if not self.renderer_active:
             return
-        frame = self.render_frame()
+        frame = self.render_display_frame()
         self._record(frame)
         if self.gui_active:
             cv2.imshow(self._window_name, frame)

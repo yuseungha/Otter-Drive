@@ -17,6 +17,7 @@ from kmu_track.unified_autonomy_core import (
 
 
 PAIR = ((0.70, 0.30), (0.72, -0.30))
+TWO_PAIRS = PAIR + ((1.02, 0.31), (1.00, -0.32))
 
 
 class TestYoloActivity(unittest.TestCase):
@@ -39,7 +40,7 @@ class TestConeModeSelector(unittest.TestCase):
     def setUp(self) -> None:
         self.now = 10.0
         self.selector = PlannerModeSelector(
-            ConeSwitchConfig(exit_missing_sec=0.8),
+            ConeSwitchConfig(minimum_cone_pairs=1, exit_missing_sec=0.8),
             clock=lambda: self.now,
         )
 
@@ -88,6 +89,7 @@ class TestConeModeSelector(unittest.TestCase):
             PAIR, cone_path_valid=True, obstacle_detected=True)
         self.assertEqual(mode, PlannerMode.CONE)
 
+<<<<<<< HEAD
     def test_timer_does_not_count_one_scan_as_multiple_frames(self) -> None:
         selector = PlannerModeSelector(ConeSwitchConfig(
             enter_confirm_frames=2))
@@ -100,6 +102,22 @@ class TestConeModeSelector(unittest.TestCase):
         mode = selector.update(
             PAIR, cone_path_valid=True, cone_observation_id=2)
         self.assertEqual(mode, PlannerMode.CONE)
+=======
+    def test_two_pairs_are_required_when_configured(self) -> None:
+        selector = PlannerModeSelector(
+            ConeSwitchConfig(minimum_cone_pairs=2),
+            clock=lambda: self.now,
+        )
+        mode = selector.update(
+            PAIR, cone_path_valid=True, obstacle_detected=True)
+        self.assertEqual(mode, PlannerMode.OBSTACLE_AVOID)
+        self.assertEqual(selector.last_pair_count, 1)
+
+        mode = selector.update(
+            TWO_PAIRS, cone_path_valid=True, obstacle_detected=True)
+        self.assertEqual(mode, PlannerMode.CONE)
+        self.assertEqual(selector.last_pair_count, 2)
+>>>>>>> 71f6446ad18055c11c45fe04dddba4d40ecc79dc
 
 
 class TestContinuousPurePursuit(unittest.TestCase):
@@ -128,6 +146,46 @@ class TestContinuousPurePursuit(unittest.TestCase):
         self.assertGreater(result.steering_angle_rad, 0.0)
         self.assertLess(steering, 0)  # measured linkage uses steering_sign=-1
 
+    def test_steering_gain_increases_all_pure_pursuit_modes(self) -> None:
+        result = self.controller.command(
+            ((0.0, 0.0), (0.5, 0.20), (1.0, 0.35)),
+            PlannerMode.CONE,
+            dt_s=0.10,
+        )
+        base_counts = DriveCountConfig(steering_gain=1.0)
+        raised_counts = DriveCountConfig(steering_gain=1.15)
+
+        for mode in (PlannerMode.CONE, PlannerMode.OBSTACLE_AVOID):
+            _throttle, base_steering = command_to_counts(
+                result, mode, self.config, base_counts)
+            _throttle, raised_steering = command_to_counts(
+                result, mode, self.config, raised_counts)
+            self.assertGreater(abs(raised_steering), abs(base_steering))
+            self.assertLessEqual(
+                abs(raised_steering), raised_counts.maximum_steering_counts)
+
+    def test_right_steering_gain_strengthens_negative_output(self) -> None:
+        result = self.controller.command(
+            ((0.0, 0.0), (0.5, 0.20), (1.0, 0.35)),
+            PlannerMode.CONE,
+            dt_s=0.10,
+        )
+        symmetric = DriveCountConfig(steering_gain=1.15)
+        right_raised = DriveCountConfig(
+            steering_gain=1.15,
+            steering_gain_right=1.30,
+        )
+        _throttle, symmetric_steering = command_to_counts(
+            result, PlannerMode.CONE, self.config, symmetric)
+        _throttle, raised_steering = command_to_counts(
+            result, PlannerMode.CONE, self.config, right_raised)
+
+        self.assertLess(symmetric_steering, 0)
+        self.assertLess(raised_steering, symmetric_steering)
+        self.assertGreater(abs(raised_steering), abs(symmetric_steering))
+        self.assertLessEqual(
+            abs(raised_steering), right_raised.maximum_steering_counts)
+
     def test_missing_path_keeps_forward_command(self) -> None:
         previous = self.controller.command(
             ((0.0, 0.0), (0.5, 0.2)), PlannerMode.CONE, dt_s=0.10)
@@ -145,6 +203,22 @@ class TestContinuousPurePursuit(unittest.TestCase):
             ((0.0, 0.0), (0.01, 0.0)), PlannerMode.LANE, dt_s=0.05)
         self.assertFalse(result.path_valid)
         self.assertGreater(result.speed_mps, 0.0)
+
+    def test_cone_curve_uses_raised_cone_minimum_speed(self) -> None:
+        config = PurePursuitConfig(
+            cone_minimum_speed_mps=0.09,
+            curvature_slowdown_gain=10.0,
+            maximum_steering_rate_rad_s=20.0,
+        )
+        controller = ContinuousPurePursuit(config)
+        result = controller.command(
+            ((0.0, 0.0), (0.12, 0.25), (0.25, 0.45)),
+            PlannerMode.CONE,
+            dt_s=0.10,
+        )
+
+        self.assertTrue(result.path_valid)
+        self.assertAlmostEqual(result.speed_mps, 0.09)
 
 
 class TestCompetitionDriveContinuity(unittest.TestCase):

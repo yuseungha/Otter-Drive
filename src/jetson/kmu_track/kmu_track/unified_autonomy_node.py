@@ -583,6 +583,7 @@ class UnifiedAutonomyNode(Node):
             'nearest_pair_m': (
                 None if pair is None else pair.center_x_m),
             'pair_width_m': None if pair is None else pair.width_m,
+            'valid_pair_count': self.selector.last_pair_count,
             'target_x_m': result.target_x_m,
             'target_y_m': result.target_y_m,
             'curvature_1pm': result.curvature_1pm,

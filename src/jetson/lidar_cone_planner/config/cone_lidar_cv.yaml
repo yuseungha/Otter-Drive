@@ -31,3 +31,6 @@ cone_cv_viewer:
     viewer_record_path: ""
     viewer_render_hz: 20.0
     viewer_tf_timeout_s: 0.02
+    unified_view_enabled: false
+    lane_overlay_topic: /lane/lane_overlay
+    camera_panel_width_px: 720

@@ -154,6 +154,7 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[LaunchConfiguration('cone_planner_config'), {
                 'scan_topic': scan_topic,
                 'planning_frame': planning_frame,
+                'path_topic': '/perception/cone_path',
                 'managed_subscription': False}]),
         Node(
             package='lidar_cone_planner', executable='cone_cv_viewer',
@@ -162,7 +163,10 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[LaunchConfiguration('lidar_system_config'), {
                 'planning_frame': planning_frame,
                 'scan_topic': scan_topic,
-                'viewer_enabled': True}]),
+                'path_topic': '/perception/cone_path',
+                'viewer_enabled': True,
+                'unified_view_enabled': True,
+                'lane_overlay_topic': '/lane/lane_overlay'}]),
 
         Node(
             package='kmu_track', executable='unified_autonomy',

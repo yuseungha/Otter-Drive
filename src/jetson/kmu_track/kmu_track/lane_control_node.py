@@ -52,6 +52,8 @@ class LaneControlNode(Node):
             'speed_timeout_sec',
             'stopped_speed_mps',
             'center_fallback_delay_sec',
+            'steering_gain',
+            'steering_gain_right',
             'steering_curve_exponent',
             'full_lock_threshold',
             'rolling_start_sec',

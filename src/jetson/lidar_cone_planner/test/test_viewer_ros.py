@@ -8,6 +8,7 @@ try:
     import numpy as np
     import rclpy
     from rclpy.parameter import Parameter
+    from sensor_msgs.msg import Image
     from std_msgs.msg import String
 
     from lidar_cone_planner.cone_cv_viewer import ConeCvViewer
@@ -95,6 +96,33 @@ class ViewerRosHeadlessTests(unittest.TestCase):
                 preview_color = np.asarray([0, 170, 255], dtype=np.uint8)
                 preview_pixels = np.all(image == preview_color, axis=2)
                 self.assertGreater(int(np.count_nonzero(preview_pixels)), 0)
+            finally:
+                viewer.destroy_node()
+
+    def test_unified_view_combines_yolo_camera_and_lidar_panels(self) -> None:
+        overrides = [
+            Parameter("viewer_enabled", value=False),
+            Parameter("viewer_width_px", value=320),
+            Parameter("viewer_height_px", value=320),
+            Parameter("unified_view_enabled", value=True),
+            Parameter("camera_panel_width_px", value=320),
+        ]
+        with mock.patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}):
+            viewer = ConeCvViewer(parameter_overrides=overrides)
+            try:
+                image = np.full((90, 160, 3), (20, 120, 220), dtype=np.uint8)
+                message = Image()
+                message.height = image.shape[0]
+                message.width = image.shape[1]
+                message.encoding = "bgr8"
+                message.step = image.shape[1] * 3
+                message.data = image.tobytes()
+                viewer._lane_overlay_callback(message)
+                viewer._mission_state_callback(String(data="lane"))
+                combined = viewer.render_display_frame()
+                self.assertEqual(combined.shape[:2], (320, 640))
+                self.assertEqual(viewer.mission_state, "LANE")
+                self.assertGreater(int(np.count_nonzero(combined[:, :320])), 0)
             finally:
                 viewer.destroy_node()
 
