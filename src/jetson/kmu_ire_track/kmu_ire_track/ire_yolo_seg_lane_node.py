@@ -7,6 +7,8 @@ from pathlib import Path
 from time import perf_counter
 
 import cv2
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path as NavPath
 import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -28,6 +30,10 @@ from kmu_ire_track.ire_segmentation_lane_core import (
     SegmentationLaneConfig,
     SegmentationLanePlanner,
     normalized_roi_bounds,
+)
+from kmu_track.lane_path_core import (
+    LanePathProjectionConfig,
+    LanePathProjector,
 )
 
 
@@ -147,6 +153,14 @@ class IreYoloSegmentationLaneNode(Node):
             memory_confidence_decay=float(self.get_parameter(
                 'memory_confidence_decay').value),
         ))
+        self.planning_frame = str(
+            self.get_parameter('planning_frame').value).strip()
+        if not self.planning_frame:
+            raise ValueError('planning_frame cannot be empty')
+        self.path_projector = LanePathProjector(LanePathProjectionConfig(**{
+            name: float(self.get_parameter(name).value)
+            for name in LanePathProjectionConfig.__dataclass_fields__
+        }))
 
         self.latest_input = None
         self.last_processed_stamp = None
@@ -234,6 +248,11 @@ class IreYoloSegmentationLaneNode(Node):
         self.declare_parameter('publish_yolo_debug', False)
         self.declare_parameter('publish_binary_debug', False)
         self.declare_parameter('publish_lane_geometry', True)
+        self.declare_parameter('planning_frame', 'base_link')
+        for name, field in (
+            LanePathProjectionConfig.__dataclass_fields__.items()
+        ):
+            self.declare_parameter(name, float(field.default))
 
     def _create_publishers(self) -> None:
         self.error_pub = self.create_publisher(
@@ -251,6 +270,8 @@ class IreYoloSegmentationLaneNode(Node):
             String, '/lane/lane_geometry', 10)
         self.result_pub = self.create_publisher(
             String, '/perception/lane_result', 10)
+        self.path_pub = self.create_publisher(
+            NavPath, '/planning/lane_path', 10)
         self.lane_valid_event_pub = self.create_publisher(
             Bool, '/perception/lane_valid', 10)
         self.debug_pub = None
@@ -513,6 +534,18 @@ class IreYoloSegmentationLaneNode(Node):
     ) -> None:
         valid = bool(geometry.get('valid'))
         confidence = float(geometry.get('confidence', 0.0))
+        path_points = self.path_projector.project_geometry(geometry)
+        lane_path = NavPath()
+        lane_path.header.stamp = source.header.stamp
+        lane_path.header.frame_id = self.planning_frame
+        for x_m, y_m in path_points:
+            pose = PoseStamped()
+            pose.header = lane_path.header
+            pose.pose.position.x = float(x_m)
+            pose.pose.position.y = float(y_m)
+            pose.pose.orientation.w = 1.0
+            lane_path.poses.append(pose)
+        self.path_pub.publish(lane_path)
         self.inference_ms_pub.publish(Float32(data=float(inference_ms)))
         self.detections_pub.publish(String(data=json.dumps(details)))
         if bool(self.get_parameter('publish_lane_geometry').value):
@@ -533,6 +566,8 @@ class IreYoloSegmentationLaneNode(Node):
             'valid': valid,
             'confidence': confidence,
             'source': geometry.get('target_source', 'NONE'),
+            'path_points': len(lane_path.poses),
+            'planning_frame': self.planning_frame,
         })))
         if self.debug_pub is not None and annotated is not None:
             self.debug_pub.publish(numpy_to_image_message(annotated, source))

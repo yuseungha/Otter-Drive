@@ -1,0 +1,36 @@
+mode_decision:
+  ros__parameters:
+    planning_frame: base_link
+    lane_path_topic: /planning/lane_path
+    cone_path_topic: /perception/cone_path
+    cones_topic: cone_planner/cones
+    raw_cones_topic: cone_planner/raw_cones
+    obstacle_points_topic: /perception/lidar_obstacle_points
+    state_topic: /mission/state
+    status_topic: /vehicle/mode_decision_status
+    evaluation_rate_hz: 20.0
+    status_rate_hz: 5.0
+    input_timeout_sec: 0.50
+
+    # Fixed cone course: measured width 0.65--0.80 m, rows 0.30 m apart.
+    # Row spacing is handled by cone_line_planner; this node checks one gate.
+    enter_distance_m: 0.90
+    minimum_forward_m: 0.05
+    minimum_lateral_m: 0.08
+    minimum_track_width_m: 0.60
+    maximum_track_width_m: 0.90
+    maximum_pair_dx_m: 0.25
+    enter_confirm_frames: 2
+    exit_missing_sec: 0.80
+
+    # Non-cone LiDAR cluster intersecting the current lane path.
+    vehicle_half_width_m: 0.15
+    detection_min_forward_m: 0.20
+    detection_max_forward_m: 2.00
+    cone_exclusion_radius_m: 0.20
+    cluster_distance_m: 0.14
+    minimum_cluster_points: 3
+    minimum_cluster_span_m: 0.08
+    maximum_cluster_span_m: 1.20
+    confirm_frames: 1
+    clear_sec: 0.60

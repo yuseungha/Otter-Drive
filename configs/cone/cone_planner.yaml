@@ -5,6 +5,7 @@
     path_topic: cone_planner/center_path
     cones_topic: cone_planner/cones
     raw_cones_topic: cone_planner/raw_cones
+    obstacle_points_topic: /perception/lidar_obstacle_points
     markers_topic: cone_planner/markers
     status_topic: cone_planner/status
     # A one-gate course can flicker briefly; require five seconds of empty ROI

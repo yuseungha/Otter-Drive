@@ -56,6 +56,11 @@ class ConeLinePlanner(Node):
         self.declare_parameter("path_topic", "cone_planner/center_path", read_only)
         self.declare_parameter("cones_topic", "cone_planner/cones", read_only)
         self.declare_parameter("raw_cones_topic", "cone_planner/raw_cones", read_only)
+        self.declare_parameter(
+            "obstacle_points_topic",
+            "/perception/lidar_obstacle_points",
+            read_only,
+        )
         self.declare_parameter("markers_topic", "cone_planner/markers", read_only)
         self.declare_parameter("status_topic", "cone_planner/status", read_only)
         self.declare_parameter("planning_frame", "base_link", read_only)
@@ -93,6 +98,8 @@ class ConeLinePlanner(Node):
         self.path_topic = str(self.get_parameter("path_topic").value)
         self.cones_topic = str(self.get_parameter("cones_topic").value)
         self.raw_cones_topic = str(self.get_parameter("raw_cones_topic").value)
+        self.obstacle_points_topic = str(
+            self.get_parameter("obstacle_points_topic").value)
         self.markers_topic = str(self.get_parameter("markers_topic").value)
         self.status_topic = str(self.get_parameter("status_topic").value)
         self.planning_frame = str(self.get_parameter("planning_frame").value)
@@ -166,6 +173,9 @@ class ConeLinePlanner(Node):
         self.raw_cones_publisher = self.create_publisher(
             PoseArray, self.raw_cones_topic, debug_qos
         )
+        self.obstacle_points_publisher = self.create_publisher(
+            PoseArray, self.obstacle_points_topic, debug_qos
+        )
         self.markers_publisher = self.create_publisher(
             MarkerArray, self.markers_topic, debug_qos
         )
@@ -199,7 +209,8 @@ class ConeLinePlanner(Node):
         ).strip().upper()
         if initial_mission_mode not in {
             "LANE_FOLLOW", "CONE_INIT", "CONE_SLALOM",
-            "LANE_REACQUIRE", "SAFE_STOP",
+            "LANE_REACQUIRE", "SAFE_STOP", "LANE", "CONE",
+            "OBSTACLE_AVOID",
         }:
             raise ValueError("invalid initial_mission_mode")
         self._mission_mode = initial_mission_mode
@@ -362,15 +373,16 @@ class ConeLinePlanner(Node):
         mode = str(message.data).strip().upper()
         if mode not in {
             "LANE_FOLLOW", "CONE_INIT", "CONE_SLALOM",
-            "LANE_REACQUIRE", "SAFE_STOP",
+            "LANE_REACQUIRE", "SAFE_STOP", "LANE", "CONE",
+            "OBSTACLE_AVOID",
         }:
             mode = "SAFE_STOP"
         self._mission_mode = mode
-        if mode == "CONE_SLALOM" and previous != mode:
+        if mode in {"CONE_SLALOM", "CONE"} and previous != mode:
             self.end_detector.enter(time.monotonic())
         if not self._managed_subscription:
             return
-        if mode not in {"CONE_INIT", "CONE_SLALOM"}:
+        if mode not in {"CONE_INIT", "CONE_SLALOM", "CONE"}:
             self._deactivate_scan_subscription()
         else:
             self._reconcile_scan_subscription()
@@ -382,7 +394,7 @@ class ConeLinePlanner(Node):
 
     def _reconcile_scan_subscription(self) -> None:
         allowed = (
-            self._mission_mode in {"CONE_INIT", "CONE_SLALOM"}
+            self._mission_mode in {"CONE_INIT", "CONE_SLALOM", "CONE"}
             and not self._camera_subscription_active
         )
         if allowed:
@@ -495,7 +507,7 @@ class ConeLinePlanner(Node):
                 obstacle_points=obstacle_points,
             )
             if (
-                self._mission_mode == "CONE_SLALOM"
+                self._mission_mode in {"CONE_SLALOM", "CONE"}
                 and self.end_detector.update(
                     confirmed_cones, time.monotonic())
             ):
@@ -542,6 +554,9 @@ class ConeLinePlanner(Node):
             self._make_pose_array(header, raw_candidates)
         )
         self.cones_publisher.publish(self._make_pose_array(header, confirmed_cones))
+        self.obstacle_points_publisher.publish(
+            self._make_pose_array(header, obstacle_points)
+        )
         self.markers_publisher.publish(
             self._make_markers(
                 header,
@@ -644,6 +659,9 @@ class ConeLinePlanner(Node):
             self._make_pose_array(header, np.empty((0, 2)))
         )
         self.cones_publisher.publish(self._make_pose_array(header, np.empty((0, 2))))
+        self.obstacle_points_publisher.publish(
+            self._make_pose_array(header, np.empty((0, 2)))
+        )
         result = empty_plan_result(status)
         self.markers_publisher.publish(
             self._make_markers(

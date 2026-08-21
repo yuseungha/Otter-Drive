@@ -20,7 +20,7 @@ ire_yolo_seg_lane_detector:
     # center at x=0.5 in ROI coordinates.
     roi_enabled: true
     roi_left_ratio: 0.12
-    roi_top_ratio: 0.43
+    roi_top_ratio: 0.30
     roi_right_ratio: 0.88
     roi_bottom_ratio: 1.0
 

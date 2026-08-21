@@ -21,6 +21,7 @@ cone_cv_viewer:
     path_topic: cone_planner/center_path
     markers_topic: cone_planner/markers
     status_topic: cone_planner/status
+    mission_state_topic: /mission/state
     planning_frame: base_link
     viewer_enabled: true
     viewer_width_px: 900
@@ -30,3 +31,6 @@ cone_cv_viewer:
     viewer_record_path: ""
     viewer_render_hz: 20.0
     viewer_tf_timeout_s: 0.02
+    unified_view_enabled: false
+    lane_overlay_topic: /lane/lane_overlay
+    camera_panel_width_px: 720

@@ -1,0 +1,65 @@
+unified_autonomy:
+  ros__parameters:
+    planning_frame: base_link
+    lane_path_topic: /planning/lane_path
+    cone_path_topic: /perception/cone_path
+    cones_topic: cone_planner/cones
+    raw_cones_topic: cone_planner/raw_cones
+    obstacle_points_topic: /perception/lidar_obstacle_points
+    output_topic: /rc_car/drive_cmd
+    lane_command_topic: /rc_car/ire_lane_cmd
+    lane_status_topic: /vehicle/lane_control_status
+    lane_command_timeout_sec: 0.25
+    active_path_topic: /planning/active_path
+    control_rate_hz: 20.0
+    # The launch file overrides this with serial_bridge:=true in live mode.
+    auto_arm_drive: false
+
+    # LANE -> CONE: one left/right pair plus a valid cone center path.
+    enter_distance_m: 0.90
+    minimum_forward_m: 0.05
+    minimum_lateral_m: 0.08
+    minimum_track_width_m: 0.35
+    maximum_track_width_m: 1.20
+    maximum_pair_dx_m: 0.25
+    # Require two independently matched left/right gates before CONE entry.
+    minimum_cone_pairs: 2
+    enter_confirm_frames: 1
+    # CONE -> LANE after the two cone lines have disappeared this long.
+    exit_missing_sec: 0.80
+
+    wheelbase_m: 0.20
+    lane_lookahead_m: 0.55
+    cone_lookahead_m: 0.35
+    maximum_steering_angle_rad: 0.6108652382
+    maximum_steering_rate_rad_s: 3.0
+    lane_cruise_speed_mps: 0.15
+    cone_cruise_speed_mps: 0.12
+    minimum_speed_mps: 0.08
+    cone_minimum_speed_mps: 0.09
+    curvature_slowdown_gain: 0.35
+    minimum_target_forward_m: 0.03
+
+    lane_throttle_counts: 550
+    cone_throttle_counts: 550
+    minimum_throttle_counts: 320
+    maximum_steering_counts: 650
+    steering_gain: 1.15
+    steering_gain_right: 1.30
+    steering_sign: -1
+
+    # The vehicle footprint is 0.30 m wide: +/-0.15 m around the path.
+    vehicle_half_width_m: 0.15
+    detection_min_forward_m: 0.20
+    detection_max_forward_m: 2.00
+    cone_exclusion_radius_m: 0.20
+    cluster_distance_m: 0.14
+    minimum_cluster_points: 3
+    minimum_cluster_span_m: 0.08
+    maximum_cluster_span_m: 1.20
+    confirm_frames: 1
+    clear_sec: 0.60
+    # Shift one full lane. Positive is vehicle-left, negative vehicle-right.
+    opposite_lane_offset_m: 0.55
+    lane_change_distance_m: 0.80
+    preferred_offset_sign: 1

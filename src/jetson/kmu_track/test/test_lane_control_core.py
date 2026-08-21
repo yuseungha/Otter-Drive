@@ -163,6 +163,60 @@ def test_preview_threshold_requests_bounded_full_lock() -> None:
     assert output.max_applied == 650
 
 
+def test_steering_gain_increases_lane_output_within_limit() -> None:
+    base_clock = FakeClock()
+    raised_clock = FakeClock()
+    shared = {
+        'kp': 1.0,
+        'kd': 0.0,
+        'k_heading': 0.0,
+        'error_lpf_alpha': 0.0,
+        'full_lock_threshold': 0.0,
+        'max_counts': 650,
+        'max_delta_counts_per_tick': 1000,
+    }
+    base = _controller(base_clock, steering_gain=1.0, **shared)
+    raised = _controller(raised_clock, steering_gain=1.15, **shared)
+    _valid_sample(base, base_clock, error=0.20)
+    _valid_sample(raised, raised_clock, error=0.20)
+
+    base_steering = base.command().steering
+    raised_steering = raised.command().steering
+
+    assert abs(raised_steering) > abs(base_steering)
+    assert abs(raised_steering) <= 650
+
+
+def test_right_steering_gain_strengthens_only_negative_output() -> None:
+    base_clock = FakeClock()
+    raised_clock = FakeClock()
+    shared = {
+        'kp': 1.0,
+        'kd': 0.0,
+        'k_heading': 0.0,
+        'error_lpf_alpha': 0.0,
+        'steering_gain': 1.15,
+        'full_lock_threshold': 0.0,
+        'max_counts': 650,
+        'max_delta_counts_per_tick': 1000,
+    }
+    base = _controller(base_clock, **shared)
+    raised = _controller(
+        raised_clock,
+        steering_gain_right=1.30,
+        **shared,
+    )
+    _valid_sample(base, base_clock, error=0.20)
+    _valid_sample(raised, raised_clock, error=0.20)
+
+    base_steering = base.command().steering
+    raised_steering = raised.command().steering
+
+    assert base_steering < 0
+    assert raised_steering < base_steering
+    assert abs(raised_steering) <= 650
+
+
 def test_rolling_start_progressively_releases_full_lock() -> None:
     clock = FakeClock()
     controller = _controller(

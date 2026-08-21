@@ -39,6 +39,9 @@ lane_control:
     # Tuned from 0.02: t=10 s straight preview was unnecessarily -82 counts.
     steer_epsilon: 0.03
     # Magnify small errors into decisive steering without raising +/-650.
+    steering_gain: 1.15
+    # The measured linkage needs a stronger negative/right command.
+    steering_gain_right: 1.30
     steering_curve_exponent: 1.0
     # Above 8% combined preview demand, request the existing +/-650 maximum.
     # The unchanged 120-count/tick limiter still ramps into full lock.

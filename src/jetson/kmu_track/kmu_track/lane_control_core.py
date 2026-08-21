@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from math import isfinite
 import time
 from typing import Callable, Optional, Sequence
 
@@ -33,6 +34,8 @@ class LaneControlConfig:
     max_counts_left: int = 0
     max_counts_right: int = 0
     steer_epsilon: float = 0.03
+    steering_gain: float = 1.0
+    steering_gain_right: float = 0.0
     steering_curve_exponent: float = 1.0
     # Zero disables the step.  When enabled, a decisive preview demand maps
     # directly to the existing bounded maximum steering angle.
@@ -75,6 +78,13 @@ class LaneControlConfig:
                     f'{side} deadband must be non-negative and below max')
         if self.max_delta_counts_per_tick <= 0:
             raise ValueError('max_delta_counts_per_tick must be positive')
+        if not isfinite(self.steering_gain) or self.steering_gain <= 0.0:
+            raise ValueError('steering_gain must be positive and finite')
+        if (
+            not isfinite(self.steering_gain_right)
+            or self.steering_gain_right < 0.0
+        ):
+            raise ValueError('steering_gain_right must be finite and nonnegative')
         if not 0.25 <= self.steering_curve_exponent <= 2.0:
             raise ValueError('steering_curve_exponent must be in [0.25, 2.0]')
         if not 0.0 <= self.full_lock_threshold <= 1.0:
@@ -491,6 +501,13 @@ class LaneControlController:
         )
         i_term = self.config.ki * candidate_integral
         normalized = p_term + d_term + i_term + h_term
+        right_demand = self.config.steering_sign * normalized < 0.0
+        steering_gain = (
+            self.config.steering_gain_right
+            if right_demand and self.config.steering_gain_right > 0.0
+            else self.config.steering_gain
+        )
+        normalized *= steering_gain
         saturated = abs(normalized) > 1.0
         if not saturated:
             self.integral = candidate_integral

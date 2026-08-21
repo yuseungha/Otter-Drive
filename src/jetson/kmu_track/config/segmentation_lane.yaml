@@ -9,6 +9,7 @@ yolo_seg_lane_detector:
     inference_rate_hz: 10.0
     max_detections: 12
     warmup: true
+    managed_subscription: false
 
     # Verified from models/center_lane_best.pt.
     center_class_name: center
@@ -28,6 +29,21 @@ yolo_seg_lane_detector:
     heading_near_ratio: 0.90
     center_consistency_tol: 0.10
     minimum_plan_confidence: 0.25
+
+    # Four-point image-to-ground calibration for /planning/lane_path.
+    # Re-measure after the final camera height and pitch are fixed.
+    planning_frame: base_link
+    far_left_x_ratio: 0.38
+    far_right_x_ratio: 0.62
+    far_y_ratio: 0.50
+    near_left_x_ratio: 0.10
+    near_right_x_ratio: 0.90
+    near_y_ratio: 0.98
+    near_forward_m: 0.10
+    far_forward_m: 2.00
+    near_half_width_m: 0.45
+    far_half_width_m: 0.45
+    minimum_forward_m: 0.02
 
     publish_lane_overlay: true
     publish_lane_geometry: true

@@ -7,6 +7,8 @@ from pathlib import Path
 from time import perf_counter
 
 import cv2
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path as NavPath
 import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -23,6 +25,11 @@ from kmu_track.segmentation_lane_core import (
     SegmentationLaneConfig,
     SegmentationLanePlanner,
 )
+from kmu_track.lane_path_core import (
+    LanePathProjectionConfig,
+    LanePathProjector,
+)
+from kmu_track.unified_autonomy_core import yolo_activity_for_mode
 
 
 def image_message_to_numpy(message: Image) -> np.ndarray:
@@ -110,16 +117,30 @@ class YoloSegmentationLaneNode(Node):
             minimum_plan_confidence=float(self.get_parameter(
                 'minimum_plan_confidence').value),
         ))
+        self.planning_frame = str(
+            self.get_parameter('planning_frame').value).strip()
+        if not self.planning_frame:
+            raise ValueError('planning_frame cannot be empty')
+        self.path_projector = LanePathProjector(LanePathProjectionConfig(**{
+            name: float(self.get_parameter(name).value)
+            for name in LanePathProjectionConfig.__dataclass_fields__
+        }))
 
         self.latest_input = None
         self.last_processed_stamp = None
+        self._managed_subscription = bool(
+            self.get_parameter('managed_subscription').value)
+        self._mission_mode = 'LANE'
+        self._image_subscription = None
         self._create_publishers()
-        self.create_subscription(
-            Image,
-            str(self.get_parameter('image_topic').value),
-            self._on_image,
-            qos_profile_sensor_data,
-        )
+        mission_qos = QoSProfile(depth=1)
+        mission_qos.reliability = ReliabilityPolicy.RELIABLE
+        mission_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        if self._managed_subscription:
+            self.create_subscription(
+                String, '/mission/state',
+                self._on_mission_state, mission_qos)
+        self._activate_image_subscription()
         rate = max(0.2, float(self.get_parameter('inference_rate_hz').value))
         self.timer = self.create_timer(1.0 / rate, self._run_inference)
         if bool(self.get_parameter('warmup').value):
@@ -140,6 +161,7 @@ class YoloSegmentationLaneNode(Node):
         self.declare_parameter('inference_rate_hz', 10.0)
         self.declare_parameter('max_detections', 12)
         self.declare_parameter('warmup', True)
+        self.declare_parameter('managed_subscription', False)
         self.declare_parameter('center_class_name', 'center')
         self.declare_parameter('boundary_class_name', 'lane')
         self.declare_parameter(
@@ -156,6 +178,11 @@ class YoloSegmentationLaneNode(Node):
         self.declare_parameter('heading_near_ratio', 0.90)
         self.declare_parameter('center_consistency_tol', 0.10)
         self.declare_parameter('minimum_plan_confidence', 0.25)
+        self.declare_parameter('planning_frame', 'base_link')
+        for name, field in (
+            LanePathProjectionConfig.__dataclass_fields__.items()
+        ):
+            self.declare_parameter(name, float(field.default))
         self.declare_parameter('publish_lane_overlay', True)
         self.declare_parameter('publish_lane_geometry', True)
 
@@ -175,6 +202,8 @@ class YoloSegmentationLaneNode(Node):
             String, '/lane/lane_geometry', 10)
         self.result_pub = self.create_publisher(
             String, '/perception/lane_result', 10)
+        self.path_pub = self.create_publisher(
+            NavPath, '/planning/lane_path', 10)
         self.lane_valid_event_pub = self.create_publisher(
             Bool, '/perception/lane_valid', 10)
         self.debug_pub = self.create_publisher(
@@ -188,6 +217,47 @@ class YoloSegmentationLaneNode(Node):
         ready_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.ready_pub = self.create_publisher(
             Bool, '/lane/detector_ready', ready_qos)
+        self.subscription_active_pub = self.create_publisher(
+            Bool, '/perception/yolo_subscription_active', ready_qos)
+
+    def _activate_image_subscription(self) -> None:
+        if self._image_subscription is not None:
+            return
+        self._image_subscription = self.create_subscription(
+            Image,
+            str(self.get_parameter('image_topic').value),
+            self._on_image,
+            qos_profile_sensor_data,
+        )
+        self.subscription_active_pub.publish(Bool(data=True))
+        self.get_logger().info('YOLO image inference active')
+
+    def _deactivate_image_subscription(self) -> None:
+        subscription = self._image_subscription
+        if subscription is None:
+            return
+        self._image_subscription = None
+        self.destroy_subscription(subscription)
+        self.latest_input = None
+        self.last_processed_stamp = None
+        self.subscription_active_pub.publish(Bool(data=False))
+        self.get_logger().info(
+            'YOLO image inference paused; model remains loaded')
+
+    def _on_mission_state(self, message: String) -> None:
+        mode = str(message.data).strip().upper()
+        requested_activity = yolo_activity_for_mode(mode)
+        if requested_activity is None:
+            self.get_logger().warn(
+                f'Ignoring unknown mission state: {mode}',
+                throttle_duration_sec=2.0,
+            )
+            return
+        self._mission_mode = mode
+        if requested_activity:
+            self._activate_image_subscription()
+        else:
+            self._deactivate_image_subscription()
 
     def _class_id(self, class_name: str) -> int:
         names = self.model.names
@@ -385,6 +455,18 @@ class YoloSegmentationLaneNode(Node):
     ) -> None:
         valid = bool(geometry.get('valid'))
         confidence = float(geometry.get('confidence', 0.0))
+        path_points = self.path_projector.project_geometry(geometry)
+        lane_path = NavPath()
+        lane_path.header.stamp = source.header.stamp
+        lane_path.header.frame_id = self.planning_frame
+        for x_m, y_m in path_points:
+            pose = PoseStamped()
+            pose.header = lane_path.header
+            pose.pose.position.x = float(x_m)
+            pose.pose.position.y = float(y_m)
+            pose.pose.orientation.w = 1.0
+            lane_path.poses.append(pose)
+        self.path_pub.publish(lane_path)
         self.inference_ms_pub.publish(Float32(data=float(inference_ms)))
         self.detections_pub.publish(String(data=json.dumps(details)))
         if bool(self.get_parameter('publish_lane_geometry').value):
@@ -409,9 +491,16 @@ class YoloSegmentationLaneNode(Node):
             'valid': valid,
             'confidence': confidence,
             'source': geometry.get('target_source', 'NONE'),
+            'path_points': len(lane_path.poses),
+            'planning_frame': self.planning_frame,
         })))
 
     def _run_inference(self) -> None:
+        if (
+            self._managed_subscription
+            and yolo_activity_for_mode(self._mission_mode) is False
+        ):
+            return
         if self.latest_input is None:
             return
         stamp, bgr, source = self.latest_input
@@ -448,6 +537,10 @@ class YoloSegmentationLaneNode(Node):
         self._publish_plan(
             source, annotated, overlay, binary,
             geometry, details, inference_ms)
+
+    def destroy_node(self) -> bool:
+        self._deactivate_image_subscription()
+        return super().destroy_node()
 
 
 def main(args=None) -> None:
