@@ -1,0 +1,96 @@
+/**:
+  ros__parameters:
+    # -----------------------------------------------------------
+    # File Paths
+    # -----------------------------------------------------------
+    waypoints_csv_path: "/home/sandi/6/waypoints.csv"
+    map_yaml_path: "/home/sandi/6/parking_map.yaml"
+
+    # -----------------------------------------------------------
+    # Vehicle Geometry & Dimensions (measured RC car: 530x260x220mm)
+    # -----------------------------------------------------------
+    wheelbase: 0.315            # Axle distance L (meters, 315mm)
+    vehicle_length: 0.530       # Frame length (meters, 530mm)
+    vehicle_width: 0.260        # Frame width (meters, 260mm)
+    vehicle_height: 0.220       # Frame height (meters, 220mm)
+    max_steer_rad: 0.610865     # 35 degrees max steering angle (radians)
+
+    # Actuator conversion: ±650 command maps to the limits above.
+    xycar_max_steer_command: 650
+    xycar_max_speed_command: 650
+    xycar_steer_scale: 0.000939793  # rad/command = radians(35)/650
+    xycar_speed_scale: 0.000230769  # m/s/command = 0.15/650
+
+    # -----------------------------------------------------------
+    # Speed & Pure Pursuit Parameters
+    # -----------------------------------------------------------
+    forward_speed: 0.15         # 0.54 km/h = 0.15 m/s
+    reverse_speed: -0.15        # -0.54 km/h = -0.15 m/s
+    
+    forward_lookahead: 0.50     # Forward lookahead distance Ld (meters)
+    reverse_lookahead: 0.40     # Reverse lookahead distance Ld (meters)
+
+    waypoint_tolerance: 0.22    # Standard waypoint transition tolerance (meters)
+    parking_tolerance: 0.10     # Strict tolerance for parking & stop endpoints (meters, tightened to 0.10m)
+    parking_yaw_tolerance: 0.10 # Strict alignment angle tolerance (radians, ~5.7 deg, tightened to 0.10 rad)
+    start_tolerance: 0.10       # Tolerance for Start Zone center pose return (meters, tightened to 0.10m)
+    parking_a_tolerance: 0.10   # Stricter tolerance for Parking Zone A center pose (meters)
+    parking_a_yaw_tolerance: 0.10 # Stricter yaw tolerance for Parking Zone A (~5.7 deg)
+    parking_b_tolerance: 0.10   # Stricter tolerance for Parking Zone B (meters, tightened to 0.10m)
+    parking_b_yaw_tolerance: 0.10 # Stricter yaw tolerance for Parking Zone B (~5.7 deg, tightened to 0.10 rad)
+    parking_wait_sec: 3.0       # Complete stop wait duration AFTER alignment is complete (seconds)
+
+    phase1_overshoot_dist: 0.30 # Forward extra travel distance after WP 27 (0.35m - 0.05m = 0.30m, reduced by 0.1s)
+    phase3_overshoot_dist: 0.50 # Forward extra travel distance after WP 55 (0.35m + 0.15m = 0.50m, increased by 0.3s)
+
+    # -----------------------------------------------------------
+    # Ground Truth Target Zone Poses (Start, Parking A, Parking B)
+    # -----------------------------------------------------------
+    # 3. Start Zone: Box Range 0.7x0.3m, Center Pose: (x=1.80, y=0.90, yaw=3.14)
+    start_pose_x: 1.80
+    start_pose_y: 0.90
+    start_pose_yaw: 3.141592
+    start_box_length: 0.70
+    start_box_width: 0.30
+
+    # 4. Parking Zone A: Center Pose: (x=0.00, y=4.20, yaw=0.0) [Horizontal]
+    parking_a_center_x: 0.00
+    parking_a_center_y: 4.20
+    parking_a_target_yaw: 0.00    # Horizontal alignment for Mission A (radians, 0.0 rad)
+
+    # 5. Parking Zone B: Center Pose: (x=2.10, y=3.30, yaw=-1.57) [Vertical]
+    parking_b_center_x: 2.10
+    parking_b_center_y: 3.30
+    parking_b_target_yaw: -1.5708 # Vertical alignment for Mission B (radians, -1.57 rad = -90deg)
+    
+    heading_align_dist: 0.40      # Distance from final parking spot to begin heading alignment (meters)
+
+    # -----------------------------------------------------------
+    # Safety & Perception Settings
+    # -----------------------------------------------------------
+    obstacle_stop_dist: 0.30    # Emergency stop distance (meters)
+    lidar_front_min_deg: -35.0  # Front collision sector min angle (degrees)
+    lidar_front_max_deg: 35.0   # Front collision sector max angle (degrees)
+    lidar_rear_min_deg: 145.0   # Rear collision sector min angle (degrees)
+    lidar_rear_max_deg: 215.0   # Rear collision sector max angle (degrees)
+    
+    enable_camera_cone_slowdown: true
+    cone_slowdown_scale: 0.50   # Speed multiplier when orange cones are detected near track
+
+    # -----------------------------------------------------------
+    # Frame IDs & Topic Names
+    # -----------------------------------------------------------
+    global_frame: "map"
+    base_frame: "base_link"
+
+    control_mode: "xycar_motor" # Options: "xycar_motor", "ackermann_cmd", "cmd_vel"
+    motor_topic: "/xycar_motor"
+    cmd_vel_topic: "/cmd_vel"
+    ackermann_topic: "/ackermann_cmd"
+    
+    scan_topic: "/scan"
+    image_topic: "/usb_cam/image_raw"
+    ultrasonic_topic: "/xycar_ultrasonic"
+    odom_topic: "/odom"
+
+    loop_rate_hz: 20.0          # Main control loop rate (Hz)

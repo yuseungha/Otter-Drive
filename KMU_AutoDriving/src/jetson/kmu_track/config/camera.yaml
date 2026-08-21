@@ -1,0 +1,9 @@
+usb_camera_source:
+  ros__parameters:
+    device: /dev/video0
+    image_topic: /camera/front/image_raw
+    frame_id: front_camera
+    width: 640
+    height: 480
+    fps: 15.0
+    reconnect_interval_sec: 1.0

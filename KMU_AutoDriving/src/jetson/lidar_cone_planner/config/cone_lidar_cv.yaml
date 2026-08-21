@@ -1,0 +1,33 @@
+cone_lidar_static_tf:
+  ros__parameters:
+    planning_frame: base_link
+    laser_frame: laser
+    # Prefer base_link at the rear-axle centre. Measure from that control
+    # reference to the LiDAR optical centre; all planning uses scan-stamp TF.
+    # Rear-axle centre to LiDAR rotation centre measured on the vehicle.
+    # Lateral offset and yaw below include the 2026-08-18 floor-grid trim.
+    lidar_x_m: 0.355
+    lidar_y_m: 0.0081
+    lidar_z_m: 0.150  # floor to LiDAR scan center
+    lidar_roll_rad: 0.0
+    lidar_pitch_rad: 0.0
+    lidar_yaw_rad: -0.05270  # -3.02 degrees
+
+cone_cv_viewer:
+  ros__parameters:
+    scan_topic: scan
+    cones_topic: cone_planner/cones
+    raw_cones_topic: cone_planner/raw_cones
+    path_topic: cone_planner/center_path
+    markers_topic: cone_planner/markers
+    status_topic: cone_planner/status
+    mission_state_topic: /mission/state
+    planning_frame: base_link
+    viewer_enabled: true
+    viewer_width_px: 900
+    viewer_height_px: 900
+    viewer_range_forward_m: 2.5
+    viewer_range_lateral_m: 1.5
+    viewer_record_path: ""
+    viewer_render_hz: 20.0
+    viewer_tf_timeout_s: 0.02

@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=sandikookmin:cuda126
+FROM ${BASE_IMAGE}
+
+# rc_car_teleop/serial_bridge imports the Python "serial" module.
+USER root
+RUN python3 -m pip install --no-cache-dir pyserial==3.5
+USER sandi

@@ -1,0 +1,146 @@
+/**:
+  ros__parameters:
+    # Relative topic names keep launch namespaces and remapping usable.
+    scan_topic: scan
+    path_topic: cone_planner/center_path
+    cones_topic: cone_planner/cones
+    raw_cones_topic: cone_planner/raw_cones
+    obstacle_points_topic: /perception/lidar_obstacle_points
+    markers_topic: cone_planner/markers
+    status_topic: cone_planner/status
+    # The integrated launch overrides this true. Standalone planner launches
+    # preserve their historical always-subscribed behaviour.
+    managed_subscription: false
+
+    cone_end_x_min: 0.3
+    cone_end_x_max: 0.7
+    cone_end_left_y_min: 0.15
+    cone_end_left_y_max: 1.0
+    cone_end_right_y_min: -1.0
+    cone_end_right_y_max: -0.15
+    cone_end_empty_scans: 1000
+    cone_min_mode_duration_sec: 1.0
+
+    # Every detected cone is transformed at the scan timestamp into this frame.
+    # Put base_link at the vehicle control reference (normally rear axle center).
+    planning_frame: base_link
+    scan_timeout_s: 0.35
+    max_scan_age_s: 0.30
+    max_future_scan_s: 0.05
+    tf_timeout_s: 0.05
+    enforce_scan_timestamp: true
+    watchdog_period_s: 0.05
+
+    # Stationary validation preview only. No actuator topic is published.
+    validation_wheelbase_m: 0.20
+    lookahead_min_m: 0.25
+    lookahead_max_m: 0.45
+    lookahead_time_s: 0.75
+    validation_speed_mps: 0.0
+
+    # Sensor-range filtering, then planning-frame vehicle ROI.
+    range_min_m: 0.15
+    range_max_m: 5.0
+    front_angle_min_deg: -100.0
+    front_angle_max_deg: 100.0
+    planning_min_forward_m: 0.35
+    # The 0.30 m-spacing course has five stations at x=0.3..1.5 m.
+    planning_max_forward_m: 2.10
+    planning_max_abs_lateral_m: 1.20
+
+    # Scan-order clustering and physical cone-size filtering.
+    cluster_base_gap_m: 0.055
+    cluster_adaptive_gap_factor: 2.5
+    cluster_max_skip_beams: 1
+    cluster_bridge_gap_multiplier: 1.35
+    cluster_min_points: 2
+    cluster_max_points: 60
+    # Official A1 angle compensation can copy one raw return into adjacent
+    # bins. Require more than one distinct range level inside a candidate.
+    cluster_min_independent_ranges: 1
+    cluster_same_range_epsilon_m: 0.0005
+    cluster_min_angular_span_deg: 0.20
+    cluster_max_angular_span_deg: 14.0
+    cone_min_width_m: 0.015
+    cone_max_width_m: 0.25
+    cone_max_radial_depth_m: 0.18
+    # Positive values move the visible near-surface centroid away from LiDAR.
+    # The 0.80 m floor-grid course measured 0.774 m between near-surface
+    # centroids.  A 24 mm outward radial correction recovered the sticker
+    # centre geometry with about 11 mm RMS residual.
+    cone_center_radial_offset_m: 0.024
+    cone_candidate_dedup_m: 0.07
+    max_cone_candidates: 48
+
+    # A cone must normally appear in two consecutive scans. This rejects many
+    # one-scan glints and angle-compensation replicas before path planning.
+    track_confirmation_scans: 1
+    track_match_distance_m: 0.18
+    track_max_missed_scans: 2
+    track_smoothing_alpha: 0.75
+
+    # Course dimensions: measure cone-center spacing and vehicle width directly.
+    # A one-sided station uses t=(tx,ty), n=(-ty,tx), then left-n*w/2 or
+    # right+n*w/2. No fixed-y or curvature/racing-line offset is applied.
+    track_width_m: 0.60
+    track_width_min_m: 0.50
+    track_width_max_m: 0.95
+    expected_cone_spacing_m: 0.30
+
+    # Multi-hypothesis left/right pair chaining.
+    pair_max_along_error_m: 0.36
+    pair_max_width_change_m: 0.18
+    pair_max_boundary_step_difference_m: 0.20
+    pair_forward_band_m: 0.22
+    pair_beam_width: 32
+    first_pair_min_distance_m: 0.12
+    first_pair_max_distance_m: 1.50
+    first_pair_max_lateral_m: 1.00
+    # The vehicle must start inside the first selected gate. This prevents a
+    # cone and cone-like clutter beyond the same boundary from seeding a lane.
+    require_first_pair_straddle: false
+    first_pair_non_straddle_penalty: 0.22
+    min_forward_progress_m: 0.04
+    max_midpoint_step_m: 0.78
+    max_turn_angle_deg: 70.0
+    max_pairs: 2
+    # Explicit course policy: one confirmed left/right gate may start a path.
+    min_pairs_for_path: 1
+    heading_update_gain: 0.70
+
+    # A short missing-side tail may be reconstructed only after at least three
+    # complete pairs. It is confidence-penalized and exposed in diagnostics.
+    enable_single_side_fallback: true
+    min_real_pairs_before_virtual: 3
+    max_virtual_pairs: 2
+    max_virtual_fraction: 0.40
+    virtual_cone_lateral_tolerance_m: 0.10
+    virtual_cone_step_tolerance_m: 0.16
+    virtual_boundary_uncertainty_m: 0.015
+    virtual_cone_confidence_weight: 0.70
+    boundary_row_confidence_weight: 0.85
+
+    # Bounded smoothing, footprint clearance and fail-closed path validity.
+    include_vehicle_origin: true
+    smoothing_weight: 0.22
+    smoothing_iterations: 2
+    max_centerline_deviation_m: 0.025
+    path_resolution_m: 0.05
+    min_path_length_m: 0.30
+    # Measured overall vehicle width: 260 mm.
+    vehicle_width_m: 0.26
+    safety_margin_m: 0.02
+    # Optional extra footprint around every observed cone. Keep zero until the
+    # physical cone/base radius is measured; the centre-line corridor checks
+    # vehicle half-width plus the safety margin above.
+    cone_obstacle_radius_m: 0.0
+    # Test-course policy: cones may be brushed; non-cone scan obstacles still
+    # retain the full vehicle-width clearance check.
+    allow_cone_contact: true
+    cone_obstacle_exclusion_radius_m: 0.18
+    # Confirmed same-row cones within this gap become a non-drivable fence.
+    boundary_fence_max_gap_m: 0.58
+    max_path_curvature_1pm: 3.5
+    curvature_sample_distance_m: 0.18
+    confidence_full_pairs: 1
+    min_plan_confidence: 0.0

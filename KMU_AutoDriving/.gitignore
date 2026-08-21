@@ -1,0 +1,43 @@
+# ROS/colcon outputs
+.colcon/
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv*/
+venv/
+
+# Runtime output
+logs/
+runs/
+*.pid
+
+# Secrets and machine-local settings
+.env
+*.key
+*.pem
+
+# Large/local assets
+data/*
+!data/.gitkeep
+models/*
+!models/README.md
+*.pt
+*.pth
+*.onnx
+*.engine
+*.bag
+*.db3
+*.mcap
+*.mp4
+*.mkv
+
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
