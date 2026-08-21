@@ -20,15 +20,19 @@ RPLIDAR A1M8 같은 2D LiDAR의 `sensor_msgs/LaserScan`에서 라바콘 후보�
 6. 두 번 이상 **연속** 관측된 후보만 확인된 라바콘으로 사용
 7. 가능한 좌우 쌍들을 만들고 여러 경로 가설을 동시에 비교
 8. 폭 변화, 양쪽 경계 연속성, 진행 방향, 콘 간격으로 최적 경계열 선택
-9. 완전한 실제 쌍 3개 이후 한쪽 끝 경계가 잠깐 끊기면 최대 2개 가상 경계 생성
-10. 경계 중점열을 제한된 범위에서만 평활화하고 균일 간격으로 재표본화
-11. 차량 폭, 가상 경계 불확실성, 경로 길이, 곡률, confidence를 검사
-12. Path와 같은 stamp의 상태를 발행하고, 제어기에서 둘을 정확히 짝지음
-13. 속도 적응 lookahead, 곡률·정지거리·confidence 제한으로 조향·속도 계산
+9. 콘 배치가 엇갈려 직접 쌍이 부족하면 좌우 두 경계선을 공통 전방 station에서
+   보간하고, 유효 폭이 유지되는 연속 구간의 중점열만 생성
+10. 완전한 실제 쌍 3개 이후 한쪽 끝 경계가 잠깐 끊기면 최대 2개 가상 경계 생성
+11. 경계 중점열을 제한된 범위에서만 평활화하고 균일 간격으로 재표본화
+12. 확인된 같은 열의 라바콘 사이를 가상 펜스로 연결해 경계 횡단을 금지
+13. 콘 여부와 무관하게 모든 전방 LiDAR 반사점에 차량 폭 복도 충돌 검사
+14. 차량 폭, 가상 경계 불확실성, 경로 길이, 곡률, confidence를 검사
+15. Path와 같은 stamp의 상태를 발행하고, 제어기에서 둘을 정확히 짝지음
+16. 속도 적응 lookahead, 곡률·정지거리·confidence 제한으로 조향·속도 계산
 
-한 개의 가까운 쌍을 탐욕적으로 고르지 않으며, 첫 쌍이 차량의 좌우를 반드시
-가로질러야 한다고 강제하지 않습니다. 따라서 차량이 코스 중앙에서 벗어난
-상태나 완만한 곡선 진입도 처리할 수 있습니다. 한 station의 좌우 콘이 모두
+한 개의 가까운 쌍을 탐욕적으로 고르지 않습니다. 실차 설정은 첫 쌍이 차량의
+좌우를 가로지르도록 강제하므로, 한쪽 라바콘 선 너머의 물체를 반대 경계로 잘못
+선택해 코스 밖으로 진입하지 않습니다. 한 station의 좌우 콘이 모두
 사라진 경우에는 다음 완전한 쌍까지 제한된 거리 안에서 건너뜁니다. 한쪽만
 보이는 짧은 꼬리는 이미 확인된 경계 접선의 법선 방향으로 복원하지만, 가상 구간은
 최대 개수·비율·추가 clearance·confidence 감점·저속 제한을 받습니다. 좌우 판단의
@@ -237,6 +241,8 @@ sudo apt install ros-humble-ackermann-msgs
 - `NOT_ENOUGH_CONES`, `NO_VALID_PAIR`, `INSUFFICIENT_PAIRS`
 - `VIRTUAL_LIMIT_EXCEEDED`: 가상 station 개수/비율 한계를 넘은 한쪽 누락
 - `INSUFFICIENT_CLEARANCE`, `PATH_OUTSIDE_CORRIDOR`
+- `CONE_BOUNDARY_CROSSING`: 확인된 라바콘 열 사이의 가상 펜스를 경로가 횡단
+- `OBSTACLE_ON_PATH`: 비라바콘 물체를 포함한 LiDAR 반사점이 차량 폭 복도 안에 있음
 - `PATH_TOO_SHORT`, `CURVATURE_LIMIT`, `LOW_CONFIDENCE`
 - `NO_SCAN`, `SCAN_TIMEOUT`, `STALE_SCAN`, `OUT_OF_ORDER_SCAN`
 - `TF_ERROR`, `BAD_SCAN_GEOMETRY`, `PROCESSING_ERROR`
@@ -253,6 +259,12 @@ sudo apt install ros-humble-ackermann-msgs
 ## RViz
 
 Fixed Frame을 `base_link`로 놓고 다음을 추가합니다.
+
+`cone_planner/markers`의 `observed_boundaries`는 차량 좌우에서 시작한 두 경계열을
+각각 전방으로 추적해 선으로 잇습니다. 각 단계에서 진행 각도와 간격에 가장 잘 맞는
+후보 하나만 선택하므로 경계 바깥 물체로 선이 갈라지지 않습니다. 한 콘 검출 누락은
+표시선만 이어 주되, 실제 경로 차단용 펜스는 더 짧은 간격으로 보수적으로 검사합니다.
+OpenCV viewer에는 이 두 경계선이 노란색으로 표시됩니다.
 
 - `LaserScan`: `/scan`
 - `MarkerArray`: `/cone_planner/markers`
@@ -274,6 +286,10 @@ Fixed Frame을 `base_link`로 놓고 다음을 추가합니다.
 - `cone_obstacle_radius_m`: 모든 관측 콘 주위에 더할 선택적 반경. 기본 0은
   `track_width_m`가 콘 중심 간 거리라는 현재 계약을 따른 값이며, 올리기 전에 실제
   통로 폭이 `vehicle_width + 2 * (safety_margin + cone radius)`보다 큰지 확인
+- `boundary_fence_max_gap_m`: 같은 열로 연결할 라바콘 사이 최대 거리. 반대편 열과
+  연결되지 않도록 `track_width_min_m`보다 작게 두고 실제 전후 간격보다 약간 크게 설정
+- `boundary_row_confidence_weight`: 엇갈린 좌우 경계선을 보간해 만든 중앙 경로의
+  confidence 감점. 두 경계가 모두 확인돼도 직접 콘 쌍보다 낮게 평가
 - `max_path_curvature_1pm`: 차량 최대 조향각과 축간거리에서 계산한 곡률 한계
 - `min_path_length_m`: 제동거리와 제어 lookahead보다 길게 설정
 - `max_virtual_pairs`, `max_virtual_fraction`: 한쪽 누락 복원의 절대·비율 한계

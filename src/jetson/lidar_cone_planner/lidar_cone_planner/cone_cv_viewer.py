@@ -18,6 +18,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import MarkerArray
 
@@ -39,6 +40,7 @@ class ConeCvViewer(Node):
             "path_topic": "cone_planner/center_path",
             "markers_topic": "cone_planner/markers",
             "status_topic": "cone_planner/status",
+            "mission_state_topic": "/mission/state",
             "planning_frame": "base_link",
         }
         for name, value in topic_defaults.items():
@@ -100,6 +102,12 @@ class ConeCvViewer(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
+        latched_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(
@@ -138,6 +146,12 @@ class ConeCvViewer(Node):
             self._status_callback,
             reliable_qos,
         )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("mission_state_topic").value),
+            self._mission_state_callback,
+            latched_qos,
+        )
 
         empty = np.empty((0, 2), dtype=float)
         self.raw_scan = empty
@@ -146,6 +160,7 @@ class ConeCvViewer(Node):
         self.path = empty
         self.marker_points: dict[str, np.ndarray] = {}
         self.status_values: dict[str, str] = {"status": "NO_DATA"}
+        self.mission_state = "WAITING"
         self._last_frame_time = time.perf_counter()
         self._fps = 0.0
         self._writer = None
@@ -231,6 +246,10 @@ class ConeCvViewer(Node):
         }
         self.status_values.setdefault("status", message.status[0].message)
 
+    def _mission_state_callback(self, message: String) -> None:
+        state = str(message.data).strip().upper()
+        self.mission_state = state if state else "UNKNOWN"
+
     def _pixel(self, point) -> tuple[int, int]:
         return metric_to_pixel(float(point[0]), float(point[1]), self.geometry)
 
@@ -289,6 +308,10 @@ class ConeCvViewer(Node):
 
     def _draw_pair_links(self, image, points) -> None:
         """Show the cross-course pairs whose midpoints define the route."""
+        self._draw_segment_links(image, points, (150, 150, 150), thickness=1)
+
+    def _draw_segment_links(self, image, points, color, *, thickness=2) -> None:
+        """Draw a LINE_LIST-style point array without joining separate segments."""
         for index in range(0, len(points) - 1, 2):
             first, second = points[index], points[index + 1]
             if self._visible(first) and self._visible(second):
@@ -296,8 +319,8 @@ class ConeCvViewer(Node):
                     image,
                     self._pixel(first),
                     self._pixel(second),
-                    (150, 150, 150),
-                    1,
+                    color,
+                    thickness,
                     cv2.LINE_AA,
                 )
 
@@ -334,10 +357,16 @@ class ConeCvViewer(Node):
 
         left = self.marker_points.get("matched_left", np.empty((0, 2)))
         right = self.marker_points.get("matched_right", np.empty((0, 2)))
+        observed_boundaries = self.marker_points.get(
+            "observed_boundaries", np.empty((0, 2))
+        )
         pair_links = self.marker_points.get("matched_pairs", np.empty((0, 2)))
         raw_center = self.marker_points.get("raw_center", np.empty((0, 2)))
         virtual_left = self.marker_points.get("virtual_left", np.empty((0, 2)))
         virtual_right = self.marker_points.get("virtual_right", np.empty((0, 2)))
+        self._draw_segment_links(
+            image, observed_boundaries, (0, 215, 240), thickness=3
+        )
         self._draw_pair_links(image, pair_links)
         self._draw_line(image, left, (255, 100, 20), 2)
         self._draw_line(image, right, (20, 30, 255), 2)
@@ -424,6 +453,46 @@ class ConeCvViewer(Node):
                 1,
                 cv2.LINE_AA,
             )
+
+        mode_colors = {
+            "LANE": (40, 210, 40),
+            "CONE": (0, 190, 255),
+            "OBSTACLE_AVOID": (40, 40, 255),
+        }
+        mode_text = f"MODE: {self.mission_state}"
+        mode_color = mode_colors.get(self.mission_state, (180, 180, 180))
+        font = cv2.FONT_HERSHEY_DUPLEX
+        font_scale = 1.05
+        thickness = 2
+        text_size, baseline = cv2.getTextSize(
+            mode_text, font, font_scale, thickness
+        )
+        text_x = max(18, self.geometry.width_px - text_size[0] - 24)
+        text_y = 42
+        cv2.rectangle(
+            image,
+            (text_x - 10, text_y - text_size[1] - 9),
+            (text_x + text_size[0] + 10, text_y + baseline + 7),
+            (15, 15, 15),
+            -1,
+        )
+        cv2.rectangle(
+            image,
+            (text_x - 10, text_y - text_size[1] - 9),
+            (text_x + text_size[0] + 10, text_y + baseline + 7),
+            mode_color,
+            2,
+        )
+        cv2.putText(
+            image,
+            mode_text,
+            (text_x, text_y),
+            font,
+            font_scale,
+            mode_color,
+            thickness,
+            cv2.LINE_AA,
+        )
         if status not in {"OK", "OK_VIRTUAL"}:
             text = (
                 "CENTER PREVIEW / STOP"

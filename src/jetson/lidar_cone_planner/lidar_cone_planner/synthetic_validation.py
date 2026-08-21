@@ -25,6 +25,7 @@ from .planner_core import (
     ConeTrackFilter,
     PlannerConfig,
     detect_cones_from_scan,
+    extract_obstacle_points_from_scan,
     plan_centerline,
 )
 from .pure_pursuit_core import (
@@ -357,7 +358,19 @@ def run_synthetic_validation(
                 sensor_range_max_m=effective_scan_max_m,
             )
             confirmed = tracker.update(candidates)
-            plan = plan_centerline(confirmed, planner_config)
+            obstacles = extract_obstacle_points_from_scan(
+                ranges,
+                angle_min,
+                angle_increment,
+                planner_config,
+                sensor_range_min_m=planner_config.range_min_m,
+                sensor_range_max_m=effective_scan_max_m,
+            )
+            plan = plan_centerline(
+                confirmed,
+                planner_config,
+                obstacle_points=obstacles,
+            )
             plan_confidences.append(plan.confidence)
             confirmed_counts.append(len(confirmed))
             real_pair_counts.append(plan.real_pair_count)

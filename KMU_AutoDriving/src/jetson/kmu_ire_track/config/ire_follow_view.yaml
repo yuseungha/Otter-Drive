@@ -1,6 +1,0 @@
-ire_follow_view:
-  ros__parameters:
-    image_topic: /lane/lane_overlay
-    window_name: IRE Follow View
-    display_width: 640
-    display_height: 360

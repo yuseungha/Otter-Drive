@@ -33,6 +33,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('hardware_confirmed', default_value='false'),
         DeclareLaunchArgument('steering_only', default_value='true'),
         DeclareLaunchArgument('serial_bridge', default_value='false'),
+        DeclareLaunchArgument('lane_stack_enabled', default_value='true'),
         DeclareLaunchArgument(
             'camera_device', default_value=EnvironmentVariable(
                 'KMU_CAMERA_DEVICE', default_value='/dev/video0')),
@@ -47,11 +48,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('scan_topic', default_value='scan'),
         DeclareLaunchArgument('planning_frame', default_value='base_link'),
         DeclareLaunchArgument('laser_frame', default_value='laser'),
-        DeclareLaunchArgument('throttle_max', default_value='300'),
+        DeclareLaunchArgument('throttle_max', default_value='550'),
         DeclareLaunchArgument('steering_min', default_value='-900'),
         DeclareLaunchArgument('steering_max', default_value='900'),
         DeclareLaunchArgument(
             'cone_geometry_confirmed', default_value='false'),
+        DeclareLaunchArgument('initial_mode', default_value='LANE_FOLLOW'),
         DeclareLaunchArgument('require_odometry', default_value='false'),
         DeclareLaunchArgument(
             'camera_config', default_value=_share(
@@ -83,6 +85,7 @@ def generate_launch_description() -> LaunchDescription:
         Node(
             package='kmu_track', executable='usb_camera_source',
             name='usb_camera_source', output='screen',
+            condition=IfCondition(LaunchConfiguration('lane_stack_enabled')),
             parameters=[LaunchConfiguration('camera_config'), {
                 'device': LaunchConfiguration('camera_device')}]),
         Node(
@@ -107,10 +110,12 @@ def generate_launch_description() -> LaunchDescription:
         Node(
             package='kmu_track', executable='sensor_mode_manager',
             name='sensor_mode_manager', output='screen',
-            parameters=[LaunchConfiguration('sensor_mode_config')]),
+            parameters=[LaunchConfiguration('sensor_mode_config'), {
+                'initial_mode': LaunchConfiguration('initial_mode')}]),
         Node(
             package='kmu_track', executable='yolo_lane_detector',
             name='yolo_lane_detector', output='screen',
+            condition=IfCondition(LaunchConfiguration('lane_stack_enabled')),
             parameters=[LaunchConfiguration('perception_config'), {
                 'model_path': LaunchConfiguration('model_path'),
                 'managed_subscription': True}]),
@@ -120,11 +125,13 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[LaunchConfiguration('cone_planner_config'), {
                 'scan_topic': LaunchConfiguration('scan_topic'),
                 'planning_frame': LaunchConfiguration('planning_frame'),
+                'initial_mission_mode': LaunchConfiguration('initial_mode'),
                 'managed_subscription': True}]),
 
         Node(
             package='kmu_track', executable='lane_control',
             name='lane_control', output='screen',
+            condition=IfCondition(LaunchConfiguration('lane_stack_enabled')),
             parameters=[LaunchConfiguration('lane_control_config'), {
                 'enabled': True,
                 'dry_run': ParameterValue(dry_run, value_type=bool),
@@ -154,7 +161,9 @@ def generate_launch_description() -> LaunchDescription:
             name='ackermann_to_drive_cmd', output='screen',
             parameters=[LaunchConfiguration('adapter_config'), {
                 'throttle_max': ParameterValue(
-                    LaunchConfiguration('throttle_max'), value_type=int)}]),
+                    LaunchConfiguration('throttle_max'), value_type=int),
+                'steering_max': ParameterValue(
+                    LaunchConfiguration('steering_max'), value_type=int)}]),
         Node(
             package='kmu_track', executable='mode_command_mux',
             name='mode_command_mux', output='screen',
@@ -175,5 +184,11 @@ def generate_launch_description() -> LaunchDescription:
                     LaunchConfiguration('steering_min'), value_type=int),
                 'steering_max': ParameterValue(
                     LaunchConfiguration('steering_max'), value_type=int),
+                'steering_feedback_guard': True,
+                'steering_feedback_timeout_sec': 0.30,
+                'steering_adc_max_error': 22,
+                'steering_adc_left': 747,
+                'steering_adc_center': 602,
+                'steering_adc_right': 462,
             }]),
     ])

@@ -33,6 +33,8 @@ setup(
             'sensor_mode_manager = '
             'kmu_track.sensor_mode_manager_node:main',
             'mode_command_mux = kmu_track.mode_command_mux_node:main',
+            'mode_decision = kmu_track.mode_decision_node:main',
+            'unified_autonomy = kmu_track.unified_autonomy_node:main',
             'scenario_player = kmu_track.scenario_player_node:main',
             'track_visualizer = kmu_track.visualizer_node:main',
             'traffic_light_detector = kmu_track.traffic_light_node:main',

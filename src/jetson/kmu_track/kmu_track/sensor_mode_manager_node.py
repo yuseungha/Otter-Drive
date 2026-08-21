@@ -9,6 +9,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Header, String
+from std_srvs.srv import SetBool
 
 from kmu_track.drive_mode_core import (
     DriveEvent,
@@ -27,13 +28,16 @@ class SensorModeManager(Node):
         self.declare_parameter('lane_confirm_window', 5)
         self.declare_parameter('lane_confirm_required', 4)
         self.declare_parameter('lane_reacquire_timeout_sec', 3.0)
-        self.declare_parameter('lidar_path_timeout_sec', 1.5)
+        self.declare_parameter('lidar_path_timeout_sec', 4.0)
         self.declare_parameter('perception_result_max_age_sec', 0.35)
         self.declare_parameter('sensor_timeout_sec', 0.60)
-        self.declare_parameter('path_timeout_sec', 0.60)
-        self.declare_parameter('subscription_switch_timeout_sec', 1.0)
-        self.declare_parameter('startup_grace_sec', 8.0)
+        self.declare_parameter('path_timeout_sec', 3.0)
+        self.declare_parameter('subscription_switch_timeout_sec', 3.0)
+        self.declare_parameter('startup_grace_sec', 15.0)
         self.declare_parameter('watchdog_rate_hz', 20.0)
+        self.declare_parameter('automatic_cone_transition_enabled', False)
+        self.declare_parameter('automatic_cone_exit_enabled', True)
+        self.declare_parameter('initial_mode', DriveMode.LANE_FOLLOW.value)
 
         window = int(self.get_parameter('lane_confirm_window').value)
         required = int(self.get_parameter('lane_confirm_required').value)
@@ -47,6 +51,10 @@ class SensorModeManager(Node):
         self._switch_timeout = self._positive(
             'subscription_switch_timeout_sec')
         self._startup_grace = self._positive('startup_grace_sec')
+        self._automatic_cone_transition = bool(self.get_parameter(
+            'automatic_cone_transition_enabled').value)
+        self._automatic_cone_exit = bool(self.get_parameter(
+            'automatic_cone_exit_enabled').value)
 
         latched = QoSProfile(depth=1)
         latched.reliability = ReliabilityPolicy.RELIABLE
@@ -59,7 +67,8 @@ class SensorModeManager(Node):
         self._status_pub = self.create_publisher(
             String, '/mission/sensor_mode_status', latched)
 
-        self._fsm = DriveModeMachine()
+        self._fsm = DriveModeMachine(
+            str(self.get_parameter('initial_mode').value).strip().upper())
         now = time.monotonic()
         self._started_at = now
         self._mode_entered_at = now
@@ -92,6 +101,11 @@ class SensorModeManager(Node):
         self.create_subscription(
             Bool, '/perception/lidar_subscription_active',
             self._on_lidar_active, latched)
+        self.create_service(
+            SetBool,
+            'sensor_mode_manager/set_cone_mode',
+            self._on_set_cone_mode,
+        )
 
         rate = self._positive('watchdog_rate_hz')
         self.create_timer(1.0 / rate, self._watchdog)
@@ -120,11 +134,11 @@ class SensorModeManager(Node):
     def mode(self) -> DriveMode:
         return self._fsm.mode
 
-    def _request_event(self, event: DriveEvent, reason: str) -> None:
+    def _request_event(self, event: DriveEvent, reason: str) -> bool:
         previous = self.mode
         current = self._fsm.apply(event)
         if current == previous:
-            return
+            return False
         self._fault_reason = reason if current == DriveMode.SAFE_STOP else ''
         self._mode_entered_at = time.monotonic()
         self._lane_confirmation.reset()
@@ -141,6 +155,44 @@ class SensorModeManager(Node):
             and event == DriveEvent.LANE_STABLE
         )
         self._publish_mode(reason)
+        return True
+
+    def _on_set_cone_mode(self, request, response):
+        """Request a legal cone-mode FSM transition without forcing state."""
+        if request.data:
+            if self.mode in {DriveMode.CONE_INIT, DriveMode.CONE_SLALOM}:
+                response.success = True
+                response.message = f'already in {self.mode.value}'
+                return response
+            if self.mode != DriveMode.LANE_FOLLOW:
+                response.success = False
+                response.message = (
+                    f'cannot enter cone mode from {self.mode.value}')
+                return response
+            accepted = self._request_event(
+                DriveEvent.CONE_CONFIRMED, 'manual_cone_mode_request')
+        else:
+            if self.mode in {DriveMode.LANE_FOLLOW, DriveMode.LANE_REACQUIRE}:
+                response.success = True
+                response.message = f'already in {self.mode.value}'
+                return response
+            if self.mode == DriveMode.CONE_INIT:
+                accepted = self._request_event(
+                    DriveEvent.CONE_CANCELLED, 'manual_cone_mode_cancel')
+            elif self.mode == DriveMode.CONE_SLALOM:
+                accepted = self._request_event(
+                    DriveEvent.CONE_FINISHED, 'manual_cone_mode_exit')
+            else:
+                response.success = False
+                response.message = (
+                    f'cannot leave cone mode from {self.mode.value}')
+                return response
+
+        response.success = bool(accepted)
+        response.message = (
+            f'transitioned to {self.mode.value}'
+            if accepted else f'no legal transition from {self.mode.value}')
+        return response
 
     def _publish_mode(self, reason: str) -> None:
         stop = (
@@ -158,11 +210,19 @@ class SensorModeManager(Node):
         self.get_logger().info(f'mission state={self.mode.value}: {reason}')
 
     def _on_cone_confirmed(self, message: Bool) -> None:
-        if message.data and self.mode == DriveMode.LANE_FOLLOW:
+        if (
+            self._automatic_cone_transition
+            and message.data
+            and self.mode == DriveMode.LANE_FOLLOW
+        ):
             self._request_event(DriveEvent.CONE_CONFIRMED, 'cone_confirmed')
 
     def _on_cone_finished(self, message: Bool) -> None:
-        if message.data and self.mode == DriveMode.CONE_SLALOM:
+        if (
+            self._automatic_cone_exit
+            and message.data
+            and self.mode == DriveMode.CONE_SLALOM
+        ):
             self._request_event(DriveEvent.CONE_FINISHED, 'cone_finished')
 
     def _on_lane_result(self, message: String) -> None:
@@ -256,7 +316,12 @@ class SensorModeManager(Node):
         heartbeat = (
             self._camera_heartbeat_at if expects_camera
             else self._lidar_heartbeat_at)
-        if ((heartbeat is None and elapsed > self._sensor_timeout)
+        # A managed subscription may need the full switch window before its
+        # first callback can publish a heartbeat.  Starting the heartbeat
+        # deadline at the mode boundary made sensor_timeout shorter than the
+        # permitted subscription switch and could fault a healthy handoff.
+        first_heartbeat_timeout = self._switch_timeout + self._sensor_timeout
+        if ((heartbeat is None and elapsed > first_heartbeat_timeout)
                 or (heartbeat is not None
                     and now - heartbeat > self._sensor_timeout)):
             self._request_event(DriveEvent.SENSOR_TIMEOUT, 'sensor_timeout')
@@ -277,6 +342,10 @@ class SensorModeManager(Node):
     def _publish_mode_status(self) -> None:
         self._status_pub.publish(String(data=json.dumps({
             'state': self.mode.value,
+            'motion_ready': self._motion_ready,
+            'automatic_cone_transition_enabled': (
+                self._automatic_cone_transition),
+            'automatic_cone_exit_enabled': self._automatic_cone_exit,
             'camera_subscription_active': self._camera_active,
             'lidar_subscription_active': self._lidar_active,
             'interlock_ok': not (self._camera_active and self._lidar_active),

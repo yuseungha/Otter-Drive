@@ -21,6 +21,7 @@ cone_cv_viewer:
     path_topic: cone_planner/center_path
     markers_topic: cone_planner/markers
     status_topic: cone_planner/status
+    mission_state_topic: /mission/state
     planning_frame: base_link
     viewer_enabled: true
     viewer_width_px: 900

@@ -20,15 +20,15 @@
     planner_max_curvature_1pm: 3.5
 
     control_frequency_hz: 50.0
-    path_timeout_s: 0.25
-    status_timeout_s: 0.25
-    receipt_timeout_s: 0.30
+    path_timeout_s: 0.80
+    status_timeout_s: 0.80
+    receipt_timeout_s: 0.80
     max_stamp_skew_s: 0.005
     max_future_stamp_s: 0.05
-    max_uncompensated_motion_m: 0.025
-    minimum_stop_hold_s: 0.50
+    max_uncompensated_motion_m: 0.16
+    minimum_stop_hold_s: 0.10
     max_path_points: 500
-    valid_frames_before_motion: 3
+    valid_frames_before_motion: 1
 
     # Set true when reliable wheel odometry is available. Without it, the
     # controller estimates motion from its own previous command and stays slow.
@@ -42,14 +42,14 @@
     min_target_forward_m: 0.08
     min_remaining_path_m: 0.25
 
-    max_speed_mps: 0.15
+    max_speed_mps: 0.20
     max_lateral_accel_mps2: 0.15
     max_accel_mps2: 0.20
     max_decel_mps2: 0.50
     stopping_buffer_m: 0.12
     max_steering_rate_rad_s: 1.50
 
-    min_plan_confidence: 0.40
+    min_plan_confidence: 0.0
     confidence_speed_floor: 0.35
     virtual_speed_factor: 0.60
     reject_steering_saturation: true

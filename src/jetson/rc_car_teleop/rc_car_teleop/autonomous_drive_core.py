@@ -8,7 +8,7 @@ from math import isfinite
 class AutonomousDriveConfig:
     max_speed_mps: float = 0.15
     max_steering_angle_rad: float = 0.6108652382
-    throttle_max: int = 300
+    throttle_max: int = 550
     steering_max: int = 900
     steering_sign: int = 1
     speed_deadband_mps: float = 0.01

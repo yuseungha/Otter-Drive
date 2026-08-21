@@ -1,4 +1,0 @@
-[submodule "src/jetson/rplidar_ros"]
-	path = src/jetson/rplidar_ros
-	url = https://github.com/Slamtec/rplidar_ros.git
-	branch = ros2

@@ -68,7 +68,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("require_odometry", default_value="false"),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("throttle_min", default_value="0"),
-        DeclareLaunchArgument("throttle_max", default_value="300"),
+        DeclareLaunchArgument("throttle_max", default_value="550"),
         DeclareLaunchArgument("steering_min", default_value="-900"),
         DeclareLaunchArgument("steering_max", default_value="900"),
 
@@ -173,6 +173,9 @@ def generate_launch_description() -> LaunchDescription:
                     "hardware_confirmed": ParameterValue(
                         hardware_confirmed, value_type=bool
                     ),
+                    "steering_max": ParameterValue(
+                        LaunchConfiguration("steering_max"), value_type=int
+                    ),
                 },
             ],
         ),
@@ -197,6 +200,12 @@ def generate_launch_description() -> LaunchDescription:
                 "steering_max": ParameterValue(
                     LaunchConfiguration("steering_max"), value_type=int
                 ),
+                "steering_feedback_guard": True,
+                "steering_feedback_timeout_sec": 0.30,
+                "steering_adc_max_error": 22,
+                "steering_adc_left": 747,
+                "steering_adc_center": 602,
+                "steering_adc_right": 462,
             }],
             condition=live_serial,
         ),

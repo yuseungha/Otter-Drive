@@ -8,6 +8,7 @@ try:
     import numpy as np
     import rclpy
     from rclpy.parameter import Parameter
+    from std_msgs.msg import String
 
     from lidar_cone_planner.cone_cv_viewer import ConeCvViewer
 
@@ -53,12 +54,24 @@ class ViewerRosHeadlessTests(unittest.TestCase):
 
     def test_viewer_enabled_false_is_safe_without_output(self) -> None:
         overrides = [Parameter("viewer_enabled", value=False)]
-        with mock.patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}):
+        environment = {"DISPLAY": "", "WAYLAND_DISPLAY": ""}
+        with mock.patch.dict(os.environ, environment):
             viewer = ConeCvViewer(parameter_overrides=overrides)
             try:
                 self.assertFalse(viewer.gui_active)
                 self.assertFalse(viewer.renderer_active)
                 viewer._render_timer()
+            finally:
+                viewer.destroy_node()
+
+    def test_mission_state_is_normalized_for_overlay(self) -> None:
+        overrides = [Parameter("viewer_enabled", value=False)]
+        environment = {"DISPLAY": "", "WAYLAND_DISPLAY": ""}
+        with mock.patch.dict(os.environ, environment):
+            viewer = ConeCvViewer(parameter_overrides=overrides)
+            try:
+                viewer._mission_state_callback(String(data="cone"))
+                self.assertEqual(viewer.mission_state, "CONE")
             finally:
                 viewer.destroy_node()
 

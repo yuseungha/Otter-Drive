@@ -25,6 +25,10 @@ docker image inspect "${image}" >/dev/null 2>&1 || {
   echo "ERROR: required image is missing: ${image}" >&2
   exit 1
 }
+docker run --rm "${image}" python3 -c 'import serial' >/dev/null 2>&1 || {
+  echo 'ERROR: container image is missing PySerial; build Dockerfile.jetson first.' >&2
+  exit 1
+}
 [[ -r ${model} ]] || { echo "ERROR: model is missing: ${model}" >&2; exit 1; }
 
 actual_model_sha=$(sha256sum "${model}" | awk '{print $1}')
@@ -42,12 +46,12 @@ PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 colcon --log-base "${colcon_root}/l
   --install-base "${colcon_root}/install" \
   --symlink-install \
   --base-paths src/jetson \
-  --packages-select rc_car_teleop kmu_track lidar_cone_planner rplidar_ros
+  --packages-select rc_car_teleop kmu_track kmu_ire_track lidar_cone_planner rplidar_ros
 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' \
   colcon --log-base "${colcon_root}/log" test \
   --build-base "${colcon_root}/build" \
   --install-base "${colcon_root}/install" \
-  --packages-select rc_car_teleop kmu_track lidar_cone_planner rplidar_ros \
+  --packages-select rc_car_teleop kmu_track kmu_ire_track lidar_cone_planner rplidar_ros \
   --event-handlers console_cohesion+
 PYTHONNOUSERSITE=1 colcon --log-base "${colcon_root}/log" test-result \
   --test-result-base "${colcon_root}/build" \

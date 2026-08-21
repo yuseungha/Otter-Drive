@@ -16,6 +16,7 @@ class DriveMode(str, Enum):
 
 class DriveEvent(str, Enum):
     CONE_CONFIRMED = "cone_confirmed"
+    CONE_CANCELLED = "cone_cancelled"
     VALID_CONE_PATH = "valid_cone_path"
     CONE_FINISHED = "cone_finished"
     LANE_STABLE = "lane_stable"
@@ -27,8 +28,12 @@ class DriveEvent(str, Enum):
 class DriveModeMachine:
     """The only legal transition table for the integrated mission manager."""
 
-    def __init__(self) -> None:
-        self.mode = DriveMode.LANE_FOLLOW
+    def __init__(self, initial_mode: DriveMode | str = DriveMode.LANE_FOLLOW) -> None:
+        initial = DriveMode(initial_mode)
+        if initial not in {DriveMode.LANE_FOLLOW, DriveMode.CONE_INIT}:
+            raise ValueError(
+                'initial_mode must be LANE_FOLLOW or fail-closed CONE_INIT')
+        self.mode = initial
 
     def apply(self, event: DriveEvent | str) -> DriveMode:
         event = DriveEvent(event)
@@ -38,6 +43,8 @@ class DriveModeMachine:
         transitions = {
             (DriveMode.LANE_FOLLOW, DriveEvent.CONE_CONFIRMED):
                 DriveMode.CONE_INIT,
+            (DriveMode.CONE_INIT, DriveEvent.CONE_CANCELLED):
+                DriveMode.LANE_REACQUIRE,
             (DriveMode.CONE_INIT, DriveEvent.VALID_CONE_PATH):
                 DriveMode.CONE_SLALOM,
             (DriveMode.CONE_INIT, DriveEvent.TIMEOUT): DriveMode.SAFE_STOP,

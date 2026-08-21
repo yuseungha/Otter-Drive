@@ -17,6 +17,14 @@ cp .env.example .env
 
 ## 실행
 
+카메라 YOLO 차선 경로와 LiDAR 라바콘 중앙 경로를 하나의 Pure Pursuit로
+주행하는 통합 코드는 다음 launch입니다. `LANE`, `OBSTACLE_AVOID`, `CONE`
+상태를 사용하며 상세 토픽과 튜닝값은 `docs/unified_autonomy.md`에 있습니다.
+
+```bash
+./scripts/run_competition.sh --unified-dry-run
+```
+
 카메라와 YOLO/제어 토픽만 실행하며 Arduino 출력은 차단합니다.
 
 ```bash
