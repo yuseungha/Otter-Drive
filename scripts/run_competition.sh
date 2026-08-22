@@ -68,15 +68,9 @@ fi
 image=${KMU_CONTAINER_IMAGE:-sandikookmin:cuda126}
 model=${KMU_MODEL_PATH:-${project_root}/models/road_best.pt}
 model_sha=${KMU_MODEL_SHA256:-b54bb33713d753ac7860ebad33c2f166ce9230f63fdf5c30a0528bac45ea779c}
-<<<<<<< HEAD
-seg_model=${KMU_SEG_MODEL_PATH:-${project_root}/models/center_lane_best.pt}
-seg_model_sha=${KMU_SEG_MODEL_SHA256:-89427ee98034e0fdcee772b194923d33f532f07aa825905ec10a205687d71996}
-if [[ ${mode} == unified-dry-run || ${mode} == unified-live || ${mode} == unified-no-stop-live ]]; then
-=======
-seg_model=${KMU_SEG_MODEL_PATH:-${project_root}/models/last_3x.pt}
+seg_model=${KMU_SEG_MODEL_PATH:-${project_root}/models/lane_seg_v3_e37.pt}
 seg_model_sha=${KMU_SEG_MODEL_SHA256:-9d2797b3513e633ac944f55ac15b75344d26a9d1751f5c555df175cb0bd548d0}
-if [[ ${mode} == unified-dry-run || ${mode} == unified-live ]]; then
->>>>>>> 71f6446ad18055c11c45fe04dddba4d40ecc79dc
+if [[ ${mode} == unified-dry-run || ${mode} == unified-live || ${mode} == unified-no-stop-live ]]; then
   model=${seg_model}
   model_sha=${seg_model_sha}
 fi

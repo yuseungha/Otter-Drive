@@ -89,20 +89,21 @@ class TestConeModeSelector(unittest.TestCase):
             PAIR, cone_path_valid=True, obstacle_detected=True)
         self.assertEqual(mode, PlannerMode.CONE)
 
-<<<<<<< HEAD
     def test_timer_does_not_count_one_scan_as_multiple_frames(self) -> None:
-        selector = PlannerModeSelector(ConeSwitchConfig(
-            enter_confirm_frames=2))
+        selector = PlannerModeSelector(
+            ConeSwitchConfig(enter_confirm_frames=2),
+            clock=lambda: self.now,
+        )
         mode = selector.update(
-            PAIR, cone_path_valid=True, cone_observation_id=1)
+            TWO_PAIRS, cone_path_valid=True, cone_observation_id=1)
         self.assertEqual(mode, PlannerMode.LANE)
         mode = selector.update(
-            PAIR, cone_path_valid=True, cone_observation_id=1)
+            TWO_PAIRS, cone_path_valid=True, cone_observation_id=1)
         self.assertEqual(mode, PlannerMode.LANE)
         mode = selector.update(
-            PAIR, cone_path_valid=True, cone_observation_id=2)
+            TWO_PAIRS, cone_path_valid=True, cone_observation_id=2)
         self.assertEqual(mode, PlannerMode.CONE)
-=======
+
     def test_two_pairs_are_required_when_configured(self) -> None:
         selector = PlannerModeSelector(
             ConeSwitchConfig(minimum_cone_pairs=2),
@@ -117,7 +118,6 @@ class TestConeModeSelector(unittest.TestCase):
             TWO_PAIRS, cone_path_valid=True, obstacle_detected=True)
         self.assertEqual(mode, PlannerMode.CONE)
         self.assertEqual(selector.last_pair_count, 2)
->>>>>>> 71f6446ad18055c11c45fe04dddba4d40ecc79dc
 
 
 class TestContinuousPurePursuit(unittest.TestCase):

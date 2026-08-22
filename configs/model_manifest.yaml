@@ -70,7 +70,61 @@ models:
       inference_ms_mean: 19.3
       verdict: "loads, task=detect, classes match, detects lane1+lane2"
 
-  - name: segmentation_lane_planner
+  - name: segmentation_lane_planner         # ACTIVE segmentation model
+    filename: lane_seg_v3_e37.pt
+    sha256: 9d2797b3513e633ac944f55ac15b75344d26a9d1751f5c555df175cb0bd548d0
+    size_bytes: 17498249
+    modified: "2026-08-20T20:58:44+00:00"
+
+    task: segment                           # verified: ultralytics task == segment
+    classes:                                # verified from model.names
+      0: center
+      1: lane
+    input_size: 640                         # imgsz used at train
+
+    provenance:
+      source_file: "last.pt, shared by the training owner"
+      base_model: "yolo11n-seg.pt"
+      architecture: "yolo11n-seg.yaml (SegmentationModel, Segment head)"
+      dataset_config: "/content/realmerge-3/data_colab.yaml"
+      training_run: "realmerge_v3_yolo11n_seg"
+      owner: "seungha"
+      checkpoint_state: >
+        INTERMEDIATE. epoch 37 of 100. optimizer, EMA and scaler state are
+        still inside the file, which is why it is 17.5 MB rather than ~6 MB.
+        Deployed raw by explicit request. A stripped fp16 copy exists at
+        01_Active_Workspace/ros2_ws/models/lane_seg_v3.pt
+        (sha256 fc98a197..., 6042772 bytes) and is NOT byte-identical.
+      best_fitness: 1.44415                 # current fitness 1.44365, so the
+                                            # peak is at some epoch before 37
+
+    train_metrics:                          # read from the checkpoint, epoch 37
+      box: {precision: 0.93255, recall: 0.89536, mAP50: 0.95142, mAP50-95: 0.80214}
+      mask: {precision: 0.90952, recall: 0.86923, mAP50: 0.92537, mAP50-95: 0.64151}
+
+    target_path_repo: "Otter-Drive/models/lane_seg_v3_e37.pt"
+    target_path_jetson: "/home/sandi/KMU_AutoDriving/models/lane_seg_v3_e37.pt"
+
+    local_validation:
+      date: "2026-08-21"
+      script: "logs/s1_segmentation_validation/validate_s1.py"
+      runtime: "ultralytics 8.4.77, torch 2.12.1+cu130, CUDA"
+      video: "04_Test_Assets/Track_drive_mp4.mp4 (640x480, 15 fps, 258.4 s)"
+      frames_sampled: 30
+      frames_with_usable_center: 12
+      pass_threshold: 15
+      usable_center_definition:
+        largest_center_area_ratio_min: 0.0015
+        largest_center_vertical_span_ratio_min: 0.15
+        center_scan_row_hits_min: 3
+      verdict: >
+        GATE NOT PASSED. Only 12 of 30 sampled frames produced a usable
+        center mask, against a pass threshold of 15. The sampling ran on the
+        640x480 track video without the ROI crop that the live 1920x1080
+        camera path applies, so the live ratio may differ; it has not been
+        measured. Re-check before competition use.
+
+  - name: segmentation_lane_planner_v8m
     filename: center_lane_best.pt
     sha256: 89427ee98034e0fdcee772b194923d33f532f07aa825905ec10a205687d71996
     size_bytes: 54825756
@@ -111,6 +165,17 @@ models:
         confidence: 0.7863
       fail_safe_sample: >
         A cone-course frame with only one lane mask produced valid=false.
+
+    status: superseded                      # replaced by lane_seg_v3_e37.pt
+    reason: >
+      Kept as a record and as the rollback target. This is a different
+      lineage, not an older build of the active model: yolov8m-seg trained
+      on realmerge-4, whereas the active model is yolo11n-seg trained on
+      realmerge-3. It is roughly three times the size and was the faster
+      model on none of the measured axes, but it is the only segmentation
+      model in this repository that has passed a planner smoke test.
+      To roll back, set KMU_SEG_MODEL_PATH and KMU_SEG_MODEL_SHA256.
+
 
   # Rejected candidate, recorded so it is not picked up by mistake.
   - name: unknown_classifier

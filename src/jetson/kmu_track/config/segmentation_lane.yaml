@@ -11,7 +11,7 @@ yolo_seg_lane_detector:
     warmup: true
     managed_subscription: false
 
-    # Verified from models/center_lane_best.pt.
+    # Verified from models/lane_seg_v3_e37.pt.
     center_class_name: center
     boundary_class_name: lane
 

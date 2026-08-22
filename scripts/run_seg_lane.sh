@@ -57,8 +57,8 @@ if [[ -r ${project_root}/.env ]]; then
 fi
 
 image=${KMU_CONTAINER_IMAGE:-sandikookmin:cuda126}
-model=${KMU_SEG_MODEL_PATH:-${project_root}/models/center_lane_best.pt}
-model_sha=${KMU_SEG_MODEL_SHA256:-89427ee98034e0fdcee772b194923d33f532f07aa825905ec10a205687d71996}
+model=${KMU_SEG_MODEL_PATH:-${project_root}/models/lane_seg_v3_e37.pt}
+model_sha=${KMU_SEG_MODEL_SHA256:-9d2797b3513e633ac944f55ac15b75344d26a9d1751f5c555df175cb0bd548d0}
 camera_requested=${KMU_CAMERA_DEVICE:-/dev/v4l/by-id/usb-046d_Logitech_BRIO_5FD2713E-video-index0}
 display=${KMU_DISPLAY:-false}
 domain_id=${KMU_ROS_DOMAIN_ID:-86}

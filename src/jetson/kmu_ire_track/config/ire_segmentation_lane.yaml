@@ -24,7 +24,7 @@ ire_yolo_seg_lane_detector:
     roi_right_ratio: 0.88
     roi_bottom_ratio: 1.0
 
-    # Verified from models/center_lane_best.pt.
+    # Verified from models/lane_seg_v3_e37.pt.
     center_class_name: center
     boundary_class_name: lane
 

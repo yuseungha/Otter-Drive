@@ -1,6 +1,6 @@
 # Segmentation lane planner
 
-`models/center_lane_best.pt`는 Ultralytics 세그멘테이션 모델이며 클래스는
+`models/lane_seg_v3_e37.pt`는 Ultralytics 세그멘테이션 모델이며 클래스는
 `center`와 `lane`입니다. 기존 `road_best.pt`의 `lane1`/`lane2` 바운딩박스
 노드와 모델 인터페이스가 다르므로 전용 `yolo_seg_lane_detector` 노드가
 처리합니다.

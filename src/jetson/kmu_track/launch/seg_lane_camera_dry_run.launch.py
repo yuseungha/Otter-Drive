@@ -11,7 +11,7 @@ from launch_ros.substitutions import FindPackageShare
 
 DEFAULT_MODEL = EnvironmentVariable(
     'KMU_SEG_MODEL_PATH',
-    default_value='/home/sandi/KMU_AutoDriving/models/center_lane_best.pt',
+    default_value='/home/sandi/KMU_AutoDriving/models/lane_seg_v3_e37.pt',
 )
 
 
