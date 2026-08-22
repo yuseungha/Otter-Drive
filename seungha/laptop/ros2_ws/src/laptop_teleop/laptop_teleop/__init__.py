@@ -1,2 +1,0 @@
-"""Laptop browser teleoperation package."""
-

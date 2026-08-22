@@ -1,9 +1,0 @@
-build/
-build_*/
-install/
-install_*/
-log/
-log_*/
-__pycache__/
-*.pyc
-.DS_Store

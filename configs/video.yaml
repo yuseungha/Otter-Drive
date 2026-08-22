@@ -1,0 +1,24 @@
+video_source:
+  ros__parameters:
+    image_topic: /camera/front/image_raw
+    frame_id: front_camera
+    loop: true
+    playback_rate: 1.0
+    output_width: 320
+    output_height: 240
+    wait_for_lane_ready: false
+
+track_visualizer:
+  ros__parameters:
+    image_topic: /camera/front/image_raw
+    window_name: KMU Lane Drive
+    display_width: 1280
+    strip_seconds: 10.0
+    rolling_stats_sec: 5.0
+    capture_dir: runs
+    show_mask_panel: false
+    auto_capture: false
+    steering_max_counts: 650
+    steering_deadband_counts: 110
+    capture_gate_transitions: false
+    capture_times_sec: [10.0, 60.0, 90.0, 210.0, 250.0]

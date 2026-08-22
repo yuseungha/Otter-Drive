@@ -1,0 +1,61 @@
+ire_yolo_seg_lane_detector:
+  ros__parameters:
+    image_topic: /camera/front/image_raw
+    confidence_threshold: 0.25
+    iou_threshold: 0.45
+    # Keep 1920x1080 capture quality, but halve the inference pixels versus
+    # the former stride-adjusted 1088 input: (768 / 1088)^2 ~= 0.50.
+    input_size: 768
+    device: auto
+    half_precision: true
+    # Match the 15 FPS camera when the GPU can keep up. Depth-one image QoS
+    # drops frames instead of accumulating latency when it cannot.
+    inference_rate_hz: 15.0
+    max_detections: 12
+    warmup: true
+
+    # Camera-specific road crop measured from the 1920x1080 installation.
+    # It keeps the distant yellow marking while removing benches/wall above
+    # and the outer clutter.  The symmetric horizontal crop keeps vehicle
+    # center at x=0.5 in ROI coordinates.
+    roi_enabled: true
+    roi_left_ratio: 0.12
+    roi_top_ratio: 0.30
+    roi_right_ratio: 0.88
+    roi_bottom_ratio: 1.0
+
+    # Verified from models/lane_seg_v3_e37.pt.
+    center_class_name: center
+    boundary_class_name: lane
+
+    # No lower-frame ROI: sample the full usable image height, from far/top
+    # to near/bottom.  The 2% edge margin avoids clipped mask borders.
+    scan_rows: [0.02, 0.10, 0.18, 0.26, 0.34, 0.42, 0.50, 0.58, 0.66, 0.74, 0.82, 0.90, 0.98]
+    scan_band_half_height: 5
+    mask_threshold: 0.50
+    min_lane_width_ratio: 0.10
+    min_mask_pixels_per_row: 3
+    min_valid_rows: 3
+    min_vertical_span_ratio: 0.15
+    max_lookahead_extrapolation_ratio: 0.05
+    # Preview farther up the image so steering starts before curve entry.
+    look_ahead_ratio: 0.62
+    # Camera optical center is aligned with the vehicle longitudinal center.
+    vehicle_center_x_ratio: 0.50
+    heading_far_ratio: 0.58
+    heading_near_ratio: 0.90
+    center_consistency_tol: 0.10
+    minimum_plan_confidence: 0.25
+    # At ~7.5 inference results/s this bridges the observed 2.7 s curve gap,
+    # but still fails closed after about 3.2 s without a usable marking.
+    memory_max_frames: 24
+    # The finite frame budget is the cutoff; confidence decay would make a
+    # 0.31-confidence valid path trip lane_control's 0.30 floor too early.
+    memory_confidence_decay: 1.0
+
+    # Launch files override this with display:=true only for explicit preview.
+    publish_lane_overlay: false
+    overlay_output_width: 640
+    publish_yolo_debug: false
+    publish_binary_debug: false
+    publish_lane_geometry: true

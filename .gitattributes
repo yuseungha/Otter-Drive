@@ -1,0 +1,6 @@
+# The Jetson runs these directly, and the folder is also moved by scp from a
+# Windows checkout. CRLF would break the shebang and `source .env`, so pin the
+# shell-consumed files to LF regardless of core.autocrlf on the copying host.
+*.sh    text eol=lf
+.env    text eol=lf
+.env.example text eol=lf

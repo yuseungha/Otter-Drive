@@ -1,0 +1,13 @@
+ackermann_to_drive_cmd:
+  ros__parameters:
+    input_topic: cone_controller/command_vector
+    output_topic: /vehicle/cone_drive_cmd
+    command_timeout_sec: 0.25
+    publish_rate_hz: 20.0
+    max_speed_mps: 0.08
+    # Amplify pure-pursuit road-wheel demand for the measured steering linkage.
+    max_steering_angle_rad: 0.20
+    throttle_max: 550
+    steering_max: 900
+    steering_sign: -1
+    speed_deadband_mps: 0.01
